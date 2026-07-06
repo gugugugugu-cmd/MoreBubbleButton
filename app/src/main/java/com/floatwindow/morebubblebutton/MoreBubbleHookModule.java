@@ -1,6 +1,7 @@
 package com.floatwindow.morebubblebutton;
 
 import android.app.Notification;
+import android.app.PendingIntent;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
@@ -255,16 +256,22 @@ public class MoreBubbleHookModule extends XposedModule {
             Object bubblesImpl = getFieldSystemUi(bubblesManager, "mBubbles");
             Object controller = getFieldSystemUi(bubblesImpl, "this$0");
             if (controller == null || pkg == null) return false;
+            Notification notif = (Notification) invokeSystemUi(sbn, "getNotification");
             Context ctx = (Context) getFieldSystemUi(controller, "mContext");
+            Intent targetIntent = getNotificationTargetIntent(notif, pkg);
             Intent launchIntent = ctx != null ? ctx.getPackageManager().getLaunchIntentForPackage(pkg) : null;
-            if (launchIntent == null) {
-                Log.w(TAG, reason + ": skip app bubble, no launch intent for " + pkg);
+            if (targetIntent == null) targetIntent = launchIntent;
+            if (targetIntent == null || launchIntent == null) {
+                Log.w(TAG, reason + ": skip app bubble, no target intent for " + pkg);
                 collapseShadeFromManager(bubblesManager);
                 return true;
             }
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            if (targetIntent.getPackage() == null && targetIntent.getComponent() == null) {
+                targetIntent.setPackage(pkg);
+            }
+            targetIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             Object entryPoint = findEntryPoint(controller.getClass().getClassLoader(), "NOTIFICATION");
-            final Intent finalIntent = launchIntent;
+            final Intent finalIntent = targetIntent;
             final UserHandle finalUser = user;
             Runnable work = () -> {
                 try {
@@ -299,6 +306,27 @@ public class MoreBubbleHookModule extends XposedModule {
         } catch (Throwable t) {
             Log.w(TAG, reason + ": app bubble schedule failed: " + t.getMessage());
             return false;
+        }
+    }
+
+    private static Intent getNotificationTargetIntent(Notification notif, String pkg) {
+        try {
+            PendingIntent pi = notif != null ? notif.contentIntent : null;
+            Intent intent = null;
+            if (pi != null) {
+                Method getIntent = findMethodSystemUi(pi.getClass(), "getIntent");
+                if (getIntent != null) intent = (Intent) getIntent.invoke(pi);
+            }
+            if (intent == null) return null;
+            Intent copy = new Intent(intent);
+            copy.putExtra("IS_FROM_NOTIFICATION", true);
+            if (pkg != null && copy.getPackage() == null && copy.getComponent() == null) {
+                copy.setPackage(pkg);
+            }
+            return copy;
+        } catch (Throwable t) {
+            Log.w(TAG, "notification target intent: " + t.getMessage());
+            return null;
         }
     }
 
