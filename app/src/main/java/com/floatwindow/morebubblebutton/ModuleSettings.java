@@ -43,7 +43,7 @@ public class ModuleSettings {
         return getPrefs(ctx).getInt(KEY_POS_X, 50);
     }
     public static void setPosX(Context ctx, int v) {
-        getPrefs(ctx).edit().putInt(KEY_POS_X, v).apply();
+        getPrefs(ctx).edit().putInt(KEY_POS_X, clampPercent(v)).apply();
     }
 
     /** Y 轴位置 0-100，50=居中 */
@@ -51,7 +51,7 @@ public class ModuleSettings {
         return getPrefs(ctx).getInt(KEY_POS_Y, 50);
     }
     public static void setPosY(Context ctx, int v) {
-        getPrefs(ctx).edit().putInt(KEY_POS_Y, v).apply();
+        getPrefs(ctx).edit().putInt(KEY_POS_Y, clampPercent(v)).apply();
     }
 
     /** 通知横幅气泡按钮开关 */
@@ -60,6 +60,10 @@ public class ModuleSettings {
     }
     public static void setSystemUiBubbleEnabled(Context ctx, boolean v) {
         getPrefs(ctx).edit().putBoolean(KEY_SYSTEMUI_BUBBLE_ENABLED, v).apply();
+    }
+
+    private static int clampPercent(int v) {
+        return Math.max(0, Math.min(100, v));
     }
 
     // 兼容旧接口

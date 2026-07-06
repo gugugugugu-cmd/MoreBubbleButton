@@ -4,11 +4,9 @@
         android:label="@string/app_name"
         android:icon="@drawable/ic_launcher"
         android:description="@string/module_description">
-        <!-- 设置入口 Activity -->
         <activity
-            android:name=".SettingsActivity"
+            android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:theme="@style/Theme.MoreBubbleButton">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

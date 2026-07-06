@@ -1,39 +1,55 @@
 # MoreBubbleButton
 
-Xposed 模块，为 Pixel Launcher 最近任务界面添加「消息气泡」功能。
+Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心添加「消息气泡」能力。
 
 ## 功能
 
-- 在多任务界面底部操作栏添加「🫧 消息气泡」按钮
+- 在 Pixel Launcher 多任务界面底部操作栏添加「🫧 消息气泡」按钮
 - 在任务卡片菜单（点击 app 左上角图标）中添加「🫧 消息气泡」选项
-- 点击后将当前选中的应用变为消息气泡模式
-- 按钮样式、动画与原生按钮完全一致
-- 按钮过多时自动换行居中显示
-- 设置界面支持 X/Y 轴微调按钮位置（含 +/- 精确按钮）
+- 点击后将当前选中的应用变为 app bubble
+- 在 SystemUI 通知中心为可打开的普通通知显示消息气泡按钮
+- 点击通知气泡按钮后：
+  - 创建并展开 app bubble
+  - 优先跳转通知 `contentIntent` 对应界面，而不是只打开 app 首页
+  - 自动收起通知中心
+  - 对 `FLAG_AUTO_CANCEL` 通知执行移除，使其表现为已读/已处理
+- 自动过滤无启动入口或特殊用户通知，避免 `android` / `user=-1` 等无效场景导致 SystemUI 崩溃
+- 设置界面支持 X/Y 轴位置调节，滑杆旁提供 `+` / `−` 精细调节按钮
 
 ## 要求
 
 - Android 16+ (API 36+)
 - 已安装 LSPosed / KernelSU + Zygisk
 - Pixel Launcher (NexusLauncher)
+- SystemUI 通知气泡功能需要把作用域同时勾选到 `com.android.systemui`
 
 ## 安装
 
 1. 下载 [最新 Release](https://github.com/TYOPXN360/MoreBubbleButton/releases) APK
-2. 在 LSPosed 中安装并启用
-3. 设置作用域为 `com.google.android.apps.nexuslauncher`
-4. 强制停止 Pixel Launcher 并重新打开
+2. 在 LSPosed 中安装并启用模块
+3. 设置作用域：
+   - `com.google.android.apps.nexuslauncher`
+   - `com.android.launcher3`（如设备使用该包名）
+   - `com.android.systemui`（通知中心气泡按钮必需）
+4. 强制停止 Pixel Launcher / SystemUI，或重启设备
 
 ## 使用
 
-### 方式一：底部操作栏
-进入多任务界面 → 点击底部「🫧 消息气泡」按钮
+### 方式一：最近任务底部操作栏
+
+进入多任务界面 → 点击底部「🫧 消息气泡」按钮。
 
 ### 方式二：任务卡片菜单
-进入多任务界面 → 点击任务卡片左上角 app 图标 → 点击「🫧 消息气泡」
 
-### 方式三：设置
-进入启动器设置 → 点击「消息气泡」→ 调整按钮位置和开关
+进入多任务界面 → 点击任务卡片左上角 app 图标 → 点击「🫧 消息气泡」。
+
+### 方式三：通知中心气泡按钮
+
+下拉通知中心 → 对支持打开的普通通知点击气泡图标 → 自动打开对应通知界面的 app bubble。
+
+### 方式四：设置界面
+
+打开 MoreBubbleButton 应用或启动器设置入口 → 调整开关和按钮位置。
 
 ## 设置项
 
@@ -41,35 +57,58 @@ Xposed 模块，为 Pixel Launcher 最近任务界面添加「消息气泡」功
 |------|------|--------|
 | 任务卡片菜单 | 在菜单中显示消息气泡选项 | 开 |
 | 底部操作栏 | 在底部显示消息气泡按钮 | 开 |
+| 通知横幅气泡 | 在 SystemUI 通知中心显示气泡按钮 | 开 |
 | 按钮位置 | 跟随原按钮 / 第二行 | 跟随原按钮 |
-| X 轴 | 水平位置（含 +/- 精调） | 50% (居中) |
-| Y 轴 | 垂直位置（含 +/- 精调） | 50% (默认间距) |
-| 重置位置 | 恢复默认 X/Y 值 | - |
-| 重启启动器 | 重启 Pixel Launcher | - |
+| X 轴 | 水平位置，支持滑杆和 `+` / `−` 精调 | 50% |
+| Y 轴 | 垂直位置，支持滑杆和 `+` / `−` 精调 | 50% |
+| 重启启动器 + 系统界面 | 通过 root 重启 Pixel Launcher / SystemUI 使设置生效 | - |
 
 ## 技术实现
 
-基于 [libxposed API 102](https://github.com/libxposed/api)，Hook Pixel Launcher 的以下组件：
+基于 [libxposed API 102](https://github.com/libxposed/api)，Hook Pixel Launcher 与 SystemUI。
+
+### Pixel Launcher
 
 | Hook 目标 | 方法 | 作用 |
 |-----------|------|------|
 | `OverviewActionsView` | `onFinishInflate` | 注入底部操作栏按钮 |
 | `OverviewActionsView` | `onClick` | 处理按钮点击 |
-| `OverviewActionsView` | `updateHiddenFlags` | 控制按钮可见性 |
 | `TaskMenuView` | `addMenuOptions` | 注入任务卡片菜单项 |
 | `SettingsActivity$LauncherSettingsFragment` | `onCreatePreferences` | 注入设置入口 |
 
-气泡触发通过 `SystemUiProxy.showAppBubble()` 调用 WMShell 的 Bubble 服务。
+最近任务气泡触发通过 `SystemUiProxy.showAppBubble()` 调用 WMShell Bubble 服务。
+
+### SystemUI
+
+| Hook 目标 | 作用 |
+|-----------|------|
+| `NotificationContentView.shouldShowBubbleButton` | 为符合条件的通知显示气泡按钮 |
+| `BubblesManager.onUserChangedBubble` / `expandStackAndSelectBubble` | 拦截通知气泡点击，改走稳定的 app bubble 路径 |
+| `BubbleController.expandStackAndSelectBubble(Intent, UserHandle, EntryPoint, null)` | 使用通知 `contentIntent` 创建并展开 app bubble |
+| `BubbleCoordinator.removeNotification` | 在气泡成功展开后移除 auto-cancel 通知 |
 
 ## 构建
 
 ```bash
-export JAVA_HOME=/path/to/jdk-17
-export GRADLE_USER_HOME=/path/to/.gradle
+cd source/BubbleButtonModule
+source /mnt/TY/android/android-project/classapp/set-env.sh
+export GRADLE_USER_HOME=$PWD/../.gradle
 ./gradlew assembleDebug
+./gradlew assembleRelease
 ```
 
-APK 输出在 `app/build/outputs/apk/debug/`
+APK 输出：
+
+- Debug: `app/build/outputs/apk/debug/app-debug.apk`
+- Release: `app/build/outputs/apk/release/app-release.apk`
+
+## Release
+
+Release 构建启用 R8 minify 与 resource shrink，并使用 release keystore 签名。
+
+## AI 声明
+
+本项目部分代码、调试与发布说明由 AI 辅助完成，最终行为以真实设备验证为准。
 
 ## License
 
