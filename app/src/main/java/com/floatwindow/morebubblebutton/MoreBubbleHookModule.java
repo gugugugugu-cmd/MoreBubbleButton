@@ -292,8 +292,8 @@ public class MoreBubbleHookModule extends XposedModule {
                     if (expand != null) {
                         expand.invoke(controller, finalIntent, finalUser, entryPoint, null);
                         Log.i(TAG, reason + ": expanded app bubble for " + pkg);
-                        dismissClickedNotificationIfAutoCancel(bubblesManager, entry);
-                        collapseShadeFromManager(bubblesManager);
+                        runOnSysuiMain(bubblesManager, () -> dismissClickedNotificationIfAutoCancel(bubblesManager, entry));
+                        runOnSysuiMain(bubblesManager, () -> collapseShadeFromManager(bubblesManager));
                     } else {
                         Log.w(TAG, reason + ": app bubble expand method not found");
                     }
@@ -368,7 +368,22 @@ public class MoreBubbleHookModule extends XposedModule {
                 Log.i(TAG, "dismissed clicked auto-cancel notification");
             }
         } catch (Throwable t) {
-            Log.w(TAG, "dismiss clicked notification: " + t.getMessage());
+            Throwable cause = t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null ? t.getCause() : t;
+            Log.w(TAG, "dismiss clicked notification: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
+        }
+    }
+
+    private static void runOnSysuiMain(Object bubblesManager, Runnable runnable) {
+        try {
+            Object executor = getFieldSystemUi(bubblesManager, "mSysuiMainExecutor");
+            Method execute = executor != null ? findMethodSystemUi(executor.getClass(), "execute", Runnable.class) : null;
+            if (execute != null) {
+                execute.invoke(executor, runnable);
+            } else {
+                new android.os.Handler(Looper.getMainLooper()).post(runnable);
+            }
+        } catch (Throwable t) {
+            try { runnable.run(); } catch (Throwable ignored) {}
         }
     }
 
