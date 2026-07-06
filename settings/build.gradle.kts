@@ -9,19 +9,13 @@ android {
 
     defaultConfig {
         applicationId = "com.floatwindow.morebubblebutton"
-        minSdk = 36
-        targetSdk = 37
+        minSdk = 31
+        targetSdk = 36
         versionCode = 5
         versionName = "1.5"
     }
 
     signingConfigs {
-        getByName("debug") {
-            storeFile = file("/mnt/TY/android/android-project/hidenavbar/NavHideModule/keystore/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
-        }
         create("release") {
             storeFile = file("/mnt/TY/android/android-project/hidenavbar/NavHideModule/keystore/debug.keystore")
             storePassword = "android"
@@ -32,10 +26,15 @@ android {
 
     buildTypes {
         debug {
+            isMinifyEnabled = false
         }
         release {
-            isMinifyEnabled = false
-            proguardFiles("proguard-rules.pro")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -45,13 +44,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    packaging {
-        resources {
-            merges += "META-INF/xposed/*"
-            excludes += "**"
-        }
-    }
-
     lint {
         abortOnError = false
         checkReleaseBuilds = false
@@ -59,5 +51,10 @@ android {
 }
 
 dependencies {
-    compileOnly(libs.libxposed.api)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.activity)
+    implementation(libs.androidx.preference)
+    implementation(libs.androidx.preference.ktx)
+    implementation(libs.material)
 }

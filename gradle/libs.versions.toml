@@ -1,9 +1,22 @@
 [versions]
-agp = "8.7.3"
-xposed-api = "102.0.0"
-
-[plugins]
-agp-app = { id = "com.android.application", version.ref = "agp" }
+agp = "9.2.1"
+kotlin = "2.3.20"
+coreKtx = "1.19.0"
+appcompat = "1.7.1"
+activity = "1.10.1"
+preference = "1.2.1"
+material = "1.14.0"
+libxposedApi = "101.0.0"
 
 [libraries]
-libxposed-api = { group = "io.github.libxposed", name = "api", version.ref = "xposed-api" }
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+androidx-activity = { group = "androidx.activity", name = "activity", version.ref = "activity" }
+androidx-preference = { module = "androidx.preference:preference", version.ref = "preference" }
+androidx-preference-ktx = { module = "androidx.preference:preference-ktx", version.ref = "preference" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+libxposed-api = { module = "io.github.libxposed:api", version.ref = "libxposedApi" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
