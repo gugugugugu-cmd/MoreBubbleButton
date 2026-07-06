@@ -9,6 +9,7 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
+import android.os.UserHandle;
 import android.util.AttributeSet;
 import android.util.Log;
 import android.view.View;
@@ -141,15 +142,8 @@ public class MoreBubbleHookModule extends XposedModule {
                             Object sbn = getFieldSystemUi(entry, "mSbn");
                             Notification notif = sbn != null ? (Notification) invokeSystemUi(sbn, "getNotification") : null;
                             if (notif != null && (notif.flags & 0x40) == 0 && notif.contentIntent != null) {
-                                // 强制注入 BubbleMetadata
-                                java.lang.reflect.Field metaField = findFieldSystemUi(entry.getClass(), "mBubbleMetadata");
-                                if (metaField != null) {
-                                    metaField.setAccessible(true);
-                                    if (metaField.get(entry) == null) {
-                                        injectBubbleMetadata(entry, notif);
-                                    }
-                                }
-                                forceCreateBubbleFromManager(chain.getThisObject(), bubblesCls, entry, notif, "expand guard");
+                                expandAppBubbleFromNotification(chain.getThisObject(), entry, "expand guard");
+                                return null;
                             }
                         }
                     } catch (Throwable t) { Log.w(TAG, "expand guard: " + t.getMessage()); }
@@ -176,20 +170,14 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             if (onUserChanged != null) {
                 hook(onUserChanged).intercept(chain -> {
-                    Object result = chain.proceed();
                     try {
                         boolean enabled = (boolean) chain.getArg(1);
                         Object entry = chain.getArg(0);
-                        if (enabled && entry != null) {
-                            Object sbn = getFieldSystemUi(entry, "mSbn");
-                            Notification notif = sbn != null ? (Notification) invokeSystemUi(sbn, "getNotification") : null;
-                            if (notif != null && (notif.flags & 0x40) == 0 && notif.contentIntent != null) {
-                                injectBubbleMetadata(entry, notif);
-                                forceCreateBubbleFromManager(chain.getThisObject(), bubblesCls, entry, notif, "user change");
-                            }
+                        if (enabled && entry != null && expandAppBubbleFromNotification(chain.getThisObject(), entry, "user change")) {
+                            return null;
                         }
                     } catch (Throwable t) { Log.w(TAG, "user change bubble: " + t.getMessage()); }
-                    return result;
+                    return chain.proceed();
                 });
                 Log.i(TAG, "Hooked BubblesManager.onUserChangedBubble OK");
             } else {
@@ -252,58 +240,76 @@ public class MoreBubbleHookModule extends XposedModule {
         Log.i(TAG, "All SystemUI hooks installed");
     }
 
-    private static void forceCreateBubbleFromManager(Object bubblesManager, Class<?> bubblesCls,
-            Object entry, Notification notif, String reason) {
+    private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {
         try {
+            Object sbn = getFieldSystemUi(entry, "mSbn");
+            if (sbn == null) return false;
+            String pkg = (String) sbn.getClass().getMethod("getPackageName").invoke(sbn);
+            UserHandle user = null;
+            try { user = (UserHandle) sbn.getClass().getMethod("getUser").invoke(sbn); } catch (Throwable ignored) {}
+            if (user == null) {
+                int userId = (int) sbn.getClass().getMethod("getUserId").invoke(sbn);
+                user = (UserHandle) UserHandle.class.getMethod("of", int.class).invoke(null, userId);
+            }
             Object bubblesImpl = getFieldSystemUi(bubblesManager, "mBubbles");
             Object controller = getFieldSystemUi(bubblesImpl, "this$0");
-            if (controller == null) return;
-            Object executor = getFieldSystemUi(controller, "mMainExecutor");
-            Runnable work = () -> forceCreateBubbleOnShellThread(bubblesManager, bubblesCls, entry, notif, reason);
-            if (executor != null) {
-                Method execute = findMethodSystemUi(executor.getClass(), "execute", Runnable.class);
-                if (execute != null) {
-                    execute.invoke(executor, work);
-                    return;
-                }
+            if (controller == null || pkg == null) return false;
+            Context ctx = (Context) getFieldSystemUi(controller, "mContext");
+            Intent launchIntent = ctx != null ? ctx.getPackageManager().getLaunchIntentForPackage(pkg) : null;
+            if (launchIntent == null) {
+                launchIntent = new Intent(Intent.ACTION_MAIN);
+                launchIntent.setPackage(pkg);
             }
-            // 兜底：如果找不到 Shell executor，仍执行原逻辑，但正常机型应走上面的 wmshell.main。
-            work.run();
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            Object entryPoint = findEntryPoint(controller.getClass().getClassLoader(), "NOTIFICATION");
+            final Intent finalIntent = launchIntent;
+            final UserHandle finalUser = user;
+            Runnable work = () -> {
+                try {
+                    Method expand = findMethodSystemUi(controller.getClass(), "expandStackAndSelectBubble",
+                            Intent.class, UserHandle.class, entryPoint != null ? entryPoint.getClass() : Object.class,
+                            clOrNull(controller.getClass().getClassLoader(), "com.android.wm.shell.shared.bubbles.BubbleBarLocation"));
+                    if (expand == null) {
+                        for (Method m : controller.getClass().getDeclaredMethods()) {
+                            if (m.getName().equals("expandStackAndSelectBubble")
+                                    && m.getParameterCount() == 4
+                                    && m.getParameterTypes()[0] == Intent.class) {
+                                m.setAccessible(true);
+                                expand = m;
+                                break;
+                            }
+                        }
+                    }
+                    if (expand != null) {
+                        expand.invoke(controller, finalIntent, finalUser, entryPoint, null);
+                        Log.i(TAG, reason + ": expanded app bubble for " + pkg);
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, reason + ": app bubble expand failed: " + t.getMessage());
+                }
+            };
+            Object executor = getFieldSystemUi(controller, "mMainExecutor");
+            Method execute = executor != null ? findMethodSystemUi(executor.getClass(), "execute", Runnable.class) : null;
+            if (execute != null) execute.invoke(executor, work); else work.run();
+            return true;
         } catch (Throwable t) {
-            Log.w(TAG, reason + ": schedule failed: " + t.getMessage());
+            Log.w(TAG, reason + ": app bubble schedule failed: " + t.getMessage());
+            return false;
         }
     }
 
-    private static void forceCreateBubbleOnShellThread(Object bubblesManager, Class<?> bubblesCls,
-            Object entry, Notification notif, String reason) {
-        try {
-            Object bubblesImpl = getFieldSystemUi(bubblesManager, "mBubbles");
-            Object controller = getFieldSystemUi(bubblesImpl, "this$0");
-            if (controller == null) return;
-            Object sbn = getFieldSystemUi(entry, "mSbn");
-            Object bubbleData = getFieldSystemUi(controller, "mBubbleData");
-            java.lang.reflect.Method getKey = sbn != null ? sbn.getClass().getMethod("getKey") : null;
-            String key = getKey != null ? (String) getKey.invoke(sbn) : null;
-            java.lang.reflect.Method hasKey = bubbleData != null
-                    ? findMethodSystemUi(bubbleData.getClass(), "hasAnyBubbleWithKey", String.class) : null;
-            boolean exists = hasKey != null && key != null && (boolean) hasKey.invoke(bubbleData, key);
-            if (exists) return;
+    private static Class<?> clOrNull(ClassLoader cl, String name) {
+        try { return cl.loadClass(name); } catch (Throwable t) { return null; }
+    }
 
-            // BubbleEntry.getBubbleMetadata() 从 Notification 读取，因此不能只设置 NotificationEntry.mBubbleMetadata。
-            notif.flags |= 4096; // Notification.FLAG_BUBBLE
-            java.lang.reflect.Method notifToBubbleEntry = findMethodSystemUi(bubblesCls, "notifToBubbleEntry", entry.getClass());
-            Object bubbleEntry = notifToBubbleEntry != null ? notifToBubbleEntry.invoke(bubblesManager, entry) : null;
-            if (bubbleEntry == null) return;
-            java.lang.reflect.Method onEntryUpdated = findMethodSystemUi(controller.getClass(), "onEntryUpdated",
-                    bubbleEntry.getClass(), boolean.class, boolean.class);
-            if (onEntryUpdated != null) {
-                onEntryUpdated.invoke(controller, bubbleEntry, true, true);
-                rememberForcedBubble(key);
-                Log.i(TAG, reason + ": created bubble for " + key);
+    private static Object findEntryPoint(ClassLoader cl, String name) {
+        try {
+            Class<?> epCls = cl.loadClass("com.android.wm.shell.shared.bubbles.logging.EntryPoint");
+            for (Object e : (Object[]) epCls.getDeclaredField("$VALUES").get(null)) {
+                if (name.equals(e.toString())) return e;
             }
-        } catch (Throwable t) {
-            Log.w(TAG, reason + ": " + t.getMessage());
-        }
+        } catch (Throwable t) { Log.w(TAG, "findEntryPoint: " + t.getMessage()); }
+        return null;
     }
 
     private static void rememberForcedBubble(String key) {
