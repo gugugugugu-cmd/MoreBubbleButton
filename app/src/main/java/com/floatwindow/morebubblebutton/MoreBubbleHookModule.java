@@ -6,12 +6,10 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
-import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
 import android.os.UserHandle;
-import android.util.AttributeSet;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
@@ -34,7 +32,7 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     private Object recentsViewInstance;
     private View bubbleButton;
-    private static View sSecondRow; // 静态引用，供 SettingsDialog 回调使用
+    private static View sSecondRow;
     private ClassLoader mLauncherClassLoader;
 
     @Override
@@ -585,128 +583,6 @@ public class MoreBubbleHookModule extends XposedModule {
                 return null;
             });
         } catch (Throwable t) { Log.e(TAG, "Hook addMenuOptions: " + t.getMessage()); }
-
-        // Hook LauncherSettingsFragment.onCreatePreferences — 注入设置
-        try {
-            hook(cl.loadClass("com.android.launcher3.settings.SettingsActivity$LauncherSettingsFragment")
-                    .getMethod("onCreatePreferences", Bundle.class, String.class)).intercept(chain -> {
-                chain.proceed();
-                try { injectSettingsPreferences(chain.getThisObject(), cl); }
-                catch (Throwable t) { Log.e(TAG, "injectSettings: " + t.getMessage()); }
-                return null;
-            });
-        } catch (Throwable t) { Log.e(TAG, "Hook SettingsActivity: " + t.getMessage()); }
-    }
-
-    // ==================== 设置注入（参考 PLEnhanced LauncherSettings.kt） ====================
-
-    private void injectSettingsPreferences(Object fragment, ClassLoader cl) {
-        try {
-            Object screen = findMethod(fragment.getClass(), "getPreferenceScreen").invoke(fragment);
-            if (screen == null) return;
-            Context ctx = (Context) findMethod(fragment.getClass(), "requireContext").invoke(fragment);
-            Class<?> prefCls = cl.loadClass("androidx.preference.Preference");
-
-            // 查找 OnPreferenceClickListener 接口
-            Class<?> clickCls = null;
-            String clickField = null;
-            for (java.lang.reflect.Method m : prefCls.getMethods()) {
-                if (m.getName().equals("setOnPreferenceClickListener") && m.getParameterCount() == 1) {
-                    clickCls = m.getParameterTypes()[0]; break;
-                }
-            }
-            if (clickCls == null) {
-                for (java.lang.reflect.Field f : prefCls.getDeclaredFields()) {
-                    if (f.getName().contains("OnClickListener") || f.getName().contains("clickListener")) {
-                        clickCls = f.getType(); clickField = f.getName(); break;
-                    }
-                }
-            }
-
-            // 创建一个"消息气泡"Preference
-            Object pref = prefCls.getDeclaredConstructor(Context.class, AttributeSet.class, int.class, int.class)
-                    .newInstance(ctx, null, android.R.attr.preferenceStyle, 0);
-            setKey(pref, "pref_more_bubble", prefCls);
-            callM(pref, "setTitle", "消息气泡");
-            callM(pref, "setSummary", "自定义消息气泡按钮的显示和位置");
-
-            // 点击打开设置对话框
-            if (clickCls != null) {
-                Object listener = java.lang.reflect.Proxy.newProxyInstance(
-                        clickCls.getClassLoader(), new Class[]{clickCls},
-                        (p, m, a) -> {
-                            if ("onPreferenceClick".equals(m.getName())) {
-                                SettingsDialog.show(ctx, null);
-                                return true;
-                            }
-                            return false;
-                        });
-                if (clickField != null) {
-                    java.lang.reflect.Field f = prefCls.getDeclaredField(clickField);
-                    f.setAccessible(true); f.set(pref, listener);
-                } else {
-                    prefCls.getMethod("setOnPreferenceClickListener", clickCls).invoke(pref, listener);
-                }
-            }
-
-            addPref(screen, pref, cl);
-            Log.i(TAG, "Settings entry injected");
-        } catch (Throwable t) { Log.e(TAG, "injectSettings: " + t.getMessage()); }
-    }
-
-    private Object newPref(Class<?> cls, Context ctx, String key, String title, String summary) {
-        try {
-            Object p = cls.getDeclaredConstructor(Context.class, AttributeSet.class, int.class, int.class)
-                    .newInstance(ctx, null, android.R.attr.preferenceStyle, 0);
-            setKey(p, key, cls);
-            callM(p, "setTitle", title);
-            if (summary != null) callM(p, "setSummary", summary);
-            return p;
-        } catch (Throwable t) { Log.w(TAG, "newPref: " + t.getMessage()); return null; }
-    }
-
-    private Object newSwitch(ClassLoader cl, Context ctx, String key, String title, String summary, boolean def) {
-        try {
-            // 使用 Preference 基类构造函数（已验证可用）
-            Class<?> prefCls = cl.loadClass("androidx.preference.Preference");
-            Object p = prefCls.getDeclaredConstructor(Context.class, AttributeSet.class, int.class, int.class)
-                    .newInstance(ctx, null, android.R.attr.preferenceStyle, 0);
-            setKey(p, key, prefCls);
-            callM(p, "setTitle", title);
-            callM(p, "setSummary", summary);
-            // 设置 SwitchPreference 的 persistent 属性
-            try { prefCls.getMethod("setPersistent", boolean.class).invoke(p, true); } catch (Throwable ignored) {}
-            // 设置默认值
-            try { prefCls.getMethod("setDefaultValue", Object.class).invoke(p, def); } catch (Throwable ignored) {}
-            return p;
-        } catch (Throwable t) { Log.w(TAG, "newSwitch: " + t.getMessage()); return null; }
-    }
-
-    private void setKey(Object p, String key, Class<?> cls) {
-        try { cls.getMethod("setKey", String.class).invoke(p, key); }
-        catch (Throwable t) { try { java.lang.reflect.Field f = cls.getDeclaredField("mKey");
-            f.setAccessible(true); f.set(p, key); } catch (Throwable ignored) {} }
-    }
-
-    private void callM(Object p, String m, String arg) {
-        try { p.getClass().getMethod(m, CharSequence.class).invoke(p, arg); }
-        catch (Throwable ignored) {}
-    }
-
-    private void addPref(Object screen, Object pref, ClassLoader cl) {
-        try { cl.loadClass("androidx.preference.PreferenceScreen")
-                .getMethod("addPreference", cl.loadClass("androidx.preference.Preference"))
-                .invoke(screen, pref); }
-        catch (Throwable t) { Log.w(TAG, "addPref: " + t.getMessage()); }
-    }
-
-    private String getPosText(Context ctx) {
-        int p = ModuleSettings.getBottomPosition(ctx);
-        return p == 0 ? "左侧" : p == 2 ? "右侧" : "居中";
-    }
-
-    private void showPosDialog(Context ctx, Object posPref) {
-        // 位置设置现在在 SettingsDialog 中处理
     }
 
     // ==================== 操作栏按钮 ====================
@@ -1142,7 +1018,7 @@ public class MoreBubbleHookModule extends XposedModule {
     }
 
     /**
-     * 静态方法：从 SettingsDialog 调用，重新应用位置设置
+     * 静态方法：从模块 Activity 调用，重新应用位置设置
      */
     public static void applyPositionFromSettings(Context ctx) {
         if (sSecondRow == null) {

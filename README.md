@@ -49,7 +49,7 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 
 ### 方式四：设置界面
 
-打开 MoreBubbleButton 应用或启动器设置入口 → 调整开关和按钮位置。
+打开 MoreBubbleButton 应用 → 调整开关和按钮位置。
 
 ## 设置项
 
@@ -74,7 +74,6 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 | `OverviewActionsView` | `onFinishInflate` | 注入底部操作栏按钮 |
 | `OverviewActionsView` | `onClick` | 处理按钮点击 |
 | `TaskMenuView` | `addMenuOptions` | 注入任务卡片菜单项 |
-| `SettingsActivity$LauncherSettingsFragment` | `onCreatePreferences` | 注入设置入口 |
 
 最近任务气泡触发通过 `SystemUiProxy.showAppBubble()` 调用 WMShell Bubble 服务。
 
