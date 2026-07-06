@@ -229,6 +229,28 @@ public class MoreBubbleHookModule extends XposedModule {
             Object bubblesImpl = getFieldSystemUi(bubblesManager, "mBubbles");
             Object controller = getFieldSystemUi(bubblesImpl, "this$0");
             if (controller == null) return;
+            Object executor = getFieldSystemUi(controller, "mMainExecutor");
+            Runnable work = () -> forceCreateBubbleOnShellThread(bubblesManager, bubblesCls, entry, notif, reason);
+            if (executor != null) {
+                Method execute = findMethodSystemUi(executor.getClass(), "execute", Runnable.class);
+                if (execute != null) {
+                    execute.invoke(executor, work);
+                    return;
+                }
+            }
+            // 兜底：如果找不到 Shell executor，仍执行原逻辑，但正常机型应走上面的 wmshell.main。
+            work.run();
+        } catch (Throwable t) {
+            Log.w(TAG, reason + ": schedule failed: " + t.getMessage());
+        }
+    }
+
+    private static void forceCreateBubbleOnShellThread(Object bubblesManager, Class<?> bubblesCls,
+            Object entry, Notification notif, String reason) {
+        try {
+            Object bubblesImpl = getFieldSystemUi(bubblesManager, "mBubbles");
+            Object controller = getFieldSystemUi(bubblesImpl, "this$0");
+            if (controller == null) return;
             Object sbn = getFieldSystemUi(entry, "mSbn");
             Object bubbleData = getFieldSystemUi(controller, "mBubbleData");
             java.lang.reflect.Method getKey = sbn != null ? sbn.getClass().getMethod("getKey") : null;
