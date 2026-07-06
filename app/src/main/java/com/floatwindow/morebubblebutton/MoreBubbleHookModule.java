@@ -83,6 +83,9 @@ public class MoreBubbleHookModule extends XposedModule {
                     Notification notif = (Notification) invokeSystemUi(sbn, "getNotification");
                     if (notif == null) return true;
                     if ((notif.flags & 0x40) != 0) return false;
+                    String pkg = (String) sbn.getClass().getMethod("getPackageName").invoke(sbn);
+                    Context viewCtx = ((View) contentView).getContext();
+                    if (pkg == null || viewCtx.getPackageManager().getLaunchIntentForPackage(pkg) == null) return false;
                     return true;
                 } catch (Throwable t) { return true; }
             });
@@ -245,20 +248,19 @@ public class MoreBubbleHookModule extends XposedModule {
             Object sbn = getFieldSystemUi(entry, "mSbn");
             if (sbn == null) return false;
             String pkg = (String) sbn.getClass().getMethod("getPackageName").invoke(sbn);
-            UserHandle user = null;
-            try { user = (UserHandle) sbn.getClass().getMethod("getUser").invoke(sbn); } catch (Throwable ignored) {}
-            if (user == null) {
-                int userId = (int) sbn.getClass().getMethod("getUserId").invoke(sbn);
-                user = (UserHandle) UserHandle.class.getMethod("of", int.class).invoke(null, userId);
-            }
+            int userId = 0;
+            try { userId = (int) sbn.getClass().getMethod("getUserId").invoke(sbn); } catch (Throwable ignored) {}
+            if (userId < 0) userId = 0;
+            UserHandle user = (UserHandle) UserHandle.class.getMethod("of", int.class).invoke(null, userId);
             Object bubblesImpl = getFieldSystemUi(bubblesManager, "mBubbles");
             Object controller = getFieldSystemUi(bubblesImpl, "this$0");
             if (controller == null || pkg == null) return false;
             Context ctx = (Context) getFieldSystemUi(controller, "mContext");
             Intent launchIntent = ctx != null ? ctx.getPackageManager().getLaunchIntentForPackage(pkg) : null;
             if (launchIntent == null) {
-                launchIntent = new Intent(Intent.ACTION_MAIN);
-                launchIntent.setPackage(pkg);
+                Log.w(TAG, reason + ": skip app bubble, no launch intent for " + pkg);
+                collapseShadeFromManager(bubblesManager);
+                return true;
             }
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             Object entryPoint = findEntryPoint(controller.getClass().getClassLoader(), "NOTIFICATION");
@@ -291,10 +293,27 @@ public class MoreBubbleHookModule extends XposedModule {
             Object executor = getFieldSystemUi(controller, "mMainExecutor");
             Method execute = executor != null ? findMethodSystemUi(executor.getClass(), "execute", Runnable.class) : null;
             if (execute != null) execute.invoke(executor, work); else work.run();
+            collapseShadeFromManager(bubblesManager);
             return true;
         } catch (Throwable t) {
             Log.w(TAG, reason + ": app bubble schedule failed: " + t.getMessage());
             return false;
+        }
+    }
+
+    private static void collapseShadeFromManager(Object bubblesManager) {
+        try {
+            Object shadeController = getFieldSystemUi(bubblesManager, "mShadeController");
+            if (shadeController == null) return;
+            Method forced = findMethodSystemUi(shadeController.getClass(), "animateCollapseShadeForcedDelayed");
+            if (forced != null) {
+                forced.invoke(shadeController);
+                return;
+            }
+            Method normal = findMethodSystemUi(shadeController.getClass(), "animateCollapseShade", int.class);
+            if (normal != null) normal.invoke(shadeController, 0);
+        } catch (Throwable t) {
+            Log.w(TAG, "collapseShade: " + t.getMessage());
         }
     }
 
