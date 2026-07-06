@@ -293,6 +293,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Object executor = getFieldSystemUi(controller, "mMainExecutor");
             Method execute = executor != null ? findMethodSystemUi(executor.getClass(), "execute", Runnable.class) : null;
             if (execute != null) execute.invoke(executor, work); else work.run();
+            dismissClickedNotificationIfAutoCancel(bubblesManager, entry);
             collapseShadeFromManager(bubblesManager);
             return true;
         } catch (Throwable t) {
@@ -301,20 +302,69 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
+    private static void dismissClickedNotificationIfAutoCancel(Object bubblesManager, Object entry) {
+        try {
+            Object sbn = getFieldSystemUi(entry, "mSbn");
+            Notification notif = sbn != null ? (Notification) invokeSystemUi(sbn, "getNotification") : null;
+            if (notif == null || (notif.flags & Notification.FLAG_AUTO_CANCEL) == 0) return;
+            Object visibilityProvider = getFieldSystemUi(bubblesManager, "mVisibilityProvider");
+            Object visibility = null;
+            if (visibilityProvider != null) {
+                Method obtain = findMethodByNameAndCount(visibilityProvider.getClass(), "obtain", 1);
+                if (obtain != null) visibility = obtain.invoke(visibilityProvider, entry);
+            }
+            ClassLoader cl = bubblesManager.getClass().getClassLoader();
+            Class<?> statsCls = cl.loadClass("com.android.systemui.statusbar.notification.collection.notifcollection.DismissedByUserStats");
+            Object stats = null;
+            for (java.lang.reflect.Constructor<?> c : statsCls.getDeclaredConstructors()) {
+                if (c.getParameterCount() == 2) {
+                    c.setAccessible(true);
+                    stats = c.newInstance(1, visibility);
+                    break;
+                }
+            }
+            if (stats == null) return;
+            Object callbacks = getFieldSystemUi(bubblesManager, "mCallbacks");
+            if (callbacks instanceof java.util.List) {
+                for (Object cb : (java.util.List<?>) callbacks) {
+                    Method remove = findMethodByNameAndCount(cb.getClass(), "removeNotification", 2);
+                    if (remove != null) remove.invoke(cb, entry, stats);
+                }
+                Log.i(TAG, "dismissed clicked auto-cancel notification");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "dismiss clicked notification: " + t.getMessage());
+        }
+    }
+
     private static void collapseShadeFromManager(Object bubblesManager) {
         try {
             Object shadeController = getFieldSystemUi(bubblesManager, "mShadeController");
             if (shadeController == null) return;
-            Method forced = findMethodSystemUi(shadeController.getClass(), "animateCollapseShadeForcedDelayed");
-            if (forced != null) {
-                forced.invoke(shadeController);
-                return;
-            }
+            Method postForce = findMethodSystemUi(shadeController.getClass(), "postAnimateForceCollapseShade");
+            if (postForce != null) { postForce.invoke(shadeController); return; }
+            Method instant = findMethodSystemUi(shadeController.getClass(), "instantCollapseShade");
+            if (instant != null) { instant.invoke(shadeController); return; }
+            Method full = findMethodSystemUi(shadeController.getClass(), "animateCollapseShade", int.class, boolean.class, boolean.class);
+            if (full != null) { full.invoke(shadeController, 2, true, true); return; }
             Method normal = findMethodSystemUi(shadeController.getClass(), "animateCollapseShade", int.class);
             if (normal != null) normal.invoke(shadeController, 0);
         } catch (Throwable t) {
             Log.w(TAG, "collapseShade: " + t.getMessage());
         }
+    }
+
+    private static Method findMethodByNameAndCount(Class<?> c, String n, int count) {
+        while (c != null) {
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals(n) && m.getParameterCount() == count) {
+                    m.setAccessible(true);
+                    return m;
+                }
+            }
+            c = c.getSuperclass();
+        }
+        return null;
     }
 
     private static Class<?> clOrNull(ClassLoader cl, String name) {
