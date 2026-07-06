@@ -340,8 +340,13 @@ public class MoreBubbleHookModule extends XposedModule {
             Object visibilityProvider = getFieldSystemUi(bubblesManager, "mVisibilityProvider");
             Object visibility = null;
             if (visibilityProvider != null) {
-                Method obtain = findMethodByNameAndCount(visibilityProvider.getClass(), "obtain", 1);
-                if (obtain != null) visibility = obtain.invoke(visibilityProvider, entry);
+                Method obtain = findCompatibleMethodByName(visibilityProvider.getClass(), "obtain", entry.getClass());
+                if (obtain == null) obtain = findCompatibleMethodByName(visibilityProvider.getClass(), "obtain", String.class);
+                if (obtain != null) {
+                    Class<?> argType = obtain.getParameterTypes()[0];
+                    Object arg = argType == String.class ? getFieldSystemUi(entry, "key") : entry;
+                    visibility = obtain.invoke(visibilityProvider, arg);
+                }
             }
             ClassLoader cl = bubblesManager.getClass().getClassLoader();
             Class<?> statsCls = cl.loadClass("com.android.systemui.statusbar.notification.collection.notifcollection.DismissedByUserStats");
@@ -388,6 +393,20 @@ public class MoreBubbleHookModule extends XposedModule {
         while (c != null) {
             for (Method m : c.getDeclaredMethods()) {
                 if (m.getName().equals(n) && m.getParameterCount() == count) {
+                    m.setAccessible(true);
+                    return m;
+                }
+            }
+            c = c.getSuperclass();
+        }
+        return null;
+    }
+
+    private static Method findCompatibleMethodByName(Class<?> c, String n, Class<?> argType) {
+        while (c != null) {
+            for (Method m : c.getDeclaredMethods()) {
+                if (m.getName().equals(n) && m.getParameterCount() == 1
+                        && m.getParameterTypes()[0].isAssignableFrom(argType)) {
                     m.setAccessible(true);
                     return m;
                 }
