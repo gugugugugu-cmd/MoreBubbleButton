@@ -266,7 +266,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 collapseShadeFromManager(bubblesManager);
                 return true;
             }
-            if (targetIntent.getPackage() == null && targetIntent.getComponent() == null) {
+            if (targetIntent.getPackage() == null) {
                 targetIntent.setPackage(pkg);
             }
             targetIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
@@ -292,6 +292,10 @@ public class MoreBubbleHookModule extends XposedModule {
                     if (expand != null) {
                         expand.invoke(controller, finalIntent, finalUser, entryPoint, null);
                         Log.i(TAG, reason + ": expanded app bubble for " + pkg);
+                        dismissClickedNotificationIfAutoCancel(bubblesManager, entry);
+                        collapseShadeFromManager(bubblesManager);
+                    } else {
+                        Log.w(TAG, reason + ": app bubble expand method not found");
                     }
                 } catch (Throwable t) {
                     Log.w(TAG, reason + ": app bubble expand failed: " + t.getMessage());
@@ -300,8 +304,6 @@ public class MoreBubbleHookModule extends XposedModule {
             Object executor = getFieldSystemUi(controller, "mMainExecutor");
             Method execute = executor != null ? findMethodSystemUi(executor.getClass(), "execute", Runnable.class) : null;
             if (execute != null) execute.invoke(executor, work); else work.run();
-            dismissClickedNotificationIfAutoCancel(bubblesManager, entry);
-            collapseShadeFromManager(bubblesManager);
             return true;
         } catch (Throwable t) {
             Log.w(TAG, reason + ": app bubble schedule failed: " + t.getMessage());
@@ -320,7 +322,7 @@ public class MoreBubbleHookModule extends XposedModule {
             if (intent == null) return null;
             Intent copy = new Intent(intent);
             copy.putExtra("IS_FROM_NOTIFICATION", true);
-            if (pkg != null && copy.getPackage() == null && copy.getComponent() == null) {
+            if (pkg != null && copy.getPackage() == null) {
                 copy.setPackage(pkg);
             }
             return copy;
