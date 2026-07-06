@@ -21,6 +21,8 @@ import android.widget.Toast;
 
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam;
@@ -52,6 +54,8 @@ public class MoreBubbleHookModule extends XposedModule {
     }
 
     private ClassLoader mSystemUiClassLoader;
+    private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
+    private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
 
     private void hookSystemUi(ClassLoader cl) {
         Log.i(TAG, "Hooking SystemUI...");
@@ -193,7 +197,32 @@ public class MoreBubbleHookModule extends XposedModule {
             }
         } catch (Throwable t) { Log.w(TAG, "Hook onUserChangedBubble: " + t.getMessage()); }
 
-        // 5. setSelectedBubbleInternal guard
+        // 5. dismissBubbleWithKey guard - 防止刚强制创建的气泡被 Ranking/Channel 立刻移除。
+        try {
+            Class<?> dataCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleData");
+            for (java.lang.reflect.Method dm : dataCls.getDeclaredMethods()) {
+                if (dm.getName().equals("dismissBubbleWithKey")
+                        && dm.getParameterCount() >= 2
+                        && dm.getParameterTypes()[0] == int.class
+                        && dm.getParameterTypes()[dm.getParameterCount() - 1] == String.class) {
+                    final int keyArgIndex = dm.getParameterCount() - 1;
+                    hook(dm).intercept(chain -> {
+                        try {
+                            int reason = (int) chain.getArg(0);
+                            String key = (String) chain.getArg(keyArgIndex);
+                            if ((reason == 4 || reason == 7 || reason == 14) && isRecentlyForcedBubble(key)) {
+                                Log.i(TAG, "keep forced bubble: skip dismiss reason=" + reason + " key=" + key);
+                                return null;
+                            }
+                        } catch (Throwable t) { Log.w(TAG, "dismiss guard: " + t.getMessage()); }
+                        return chain.proceed();
+                    });
+                }
+            }
+            Log.i(TAG, "Hooked BubbleData.dismissBubbleWithKey OK");
+        } catch (Throwable t) { Log.w(TAG, "Hook dismiss guard: " + t.getMessage()); }
+
+        // 6. setSelectedBubbleInternal guard
         try {
             Class<?> dataCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleData");
             java.lang.reflect.Method m = findMethodSystemUi(dataCls, "setSelectedBubbleInternal");
@@ -269,11 +298,28 @@ public class MoreBubbleHookModule extends XposedModule {
                     bubbleEntry.getClass(), boolean.class, boolean.class);
             if (onEntryUpdated != null) {
                 onEntryUpdated.invoke(controller, bubbleEntry, true, true);
+                rememberForcedBubble(key);
                 Log.i(TAG, reason + ": created bubble for " + key);
             }
         } catch (Throwable t) {
             Log.w(TAG, reason + ": " + t.getMessage());
         }
+    }
+
+    private static void rememberForcedBubble(String key) {
+        if (key != null) sForcedBubbleKeys.put(key, System.currentTimeMillis());
+    }
+
+    private static boolean isRecentlyForcedBubble(String key) {
+        if (key == null) return false;
+        Long ts = sForcedBubbleKeys.get(key);
+        if (ts == null) return false;
+        long age = System.currentTimeMillis() - ts;
+        if (age > FORCED_BUBBLE_GRACE_MS) {
+            sForcedBubbleKeys.remove(key);
+            return false;
+        }
+        return true;
     }
 
     private static void injectBubbleMetadata(Object entry, Notification notif) {
