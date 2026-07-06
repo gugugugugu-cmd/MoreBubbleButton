@@ -22,4 +22,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "BubbleButtonModule"
 include(":app")
-include(":settings")

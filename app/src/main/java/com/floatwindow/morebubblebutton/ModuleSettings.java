@@ -4,7 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 public class ModuleSettings {
-    private static final String PREFS_NAME = "morebubblebutton_settings";
+    public static final String PREFS_NAME = "morebubblebutton_settings";
     private static final String KEY_MENU_ENABLED = "menu_enabled";
     private static final String KEY_ACTION_BAR_ENABLED = "action_bar_enabled";
     private static final String KEY_POSITION_MODE = "position_mode"; // 0=跟随原按钮 1=第二行
