@@ -161,6 +161,21 @@ fun SettingsScreen() {
                             try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
                         }
                     )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedButton(
+                        onClick = {
+                            sliderX = 50f
+                            sliderY = 50f
+                            ModuleSettings.setPosX(ctx, 50)
+                            ModuleSettings.setPosY(ctx, 50)
+                            try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("恢复默认 X/Y 位置")
+                    }
                 } else {
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
