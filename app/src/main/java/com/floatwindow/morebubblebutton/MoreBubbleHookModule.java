@@ -803,16 +803,25 @@ public class MoreBubbleHookModule extends XposedModule {
             // X margin + alpha 同步 — 用 OnPreDrawListener 保证每帧都正确
             View abv2 = actionsParent.findViewById(
                     res.getIdentifier("action_buttons", "id", pkg));
-            final boolean[] xApplied = {false};
             actionsParent.getViewTreeObserver().addOnPreDrawListener(
                     new ViewTreeObserver.OnPreDrawListener() {
+                        private int lastX = Integer.MIN_VALUE;
+                        private int lastY = Integer.MIN_VALUE;
+
                         @Override public boolean onPreDraw() {
-                            // X margin — 应用一次后不再修改
-                            if (!xApplied[0] && sSecondRow != null && sSecondRow.getWidth() > 0) {
-                                FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) sSecondRow.getLayoutParams();
-                                applyXMargin(ctx, p);
-                                sSecondRow.setLayoutParams(p);
-                                xApplied[0] = true;
+                            if (sSecondRow != null && sSecondRow.getWidth() > 0) {
+                                int posX = ModuleSettings.getPosX(ctx);
+                                int posY = ModuleSettings.getPosY(ctx);
+                                if (posX != lastX || posY != lastY) {
+                                    FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) sSecondRow.getLayoutParams();
+                                    int maxOffset = (int)(48 * ctx.getResources().getDisplayMetrics().density);
+                                    p.bottomMargin = (int)(Math.min(posY * 1.4f, 100f) / 100f * maxOffset);
+                                    applyXMargin(ctx, p);
+                                    sSecondRow.setLayoutParams(p);
+                                    lastX = posX;
+                                    lastY = posY;
+                                    Log.i(TAG, "live position applied: X=" + posX + " Y=" + posY);
+                                }
                             }
                             // alpha 同步
                             if (sSecondRow != null && abv2 != null)
