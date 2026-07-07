@@ -22,6 +22,7 @@ fun SettingsScreen() {
     var menuEnabled by remember { mutableStateOf(ModuleSettings.isMenuEnabled(ctx)) }
     var actionBarEnabled by remember { mutableStateOf(ModuleSettings.isActionBarEnabled(ctx)) }
     var systemUiBubbleEnabled by remember { mutableStateOf(ModuleSettings.isSystemUiBubbleEnabled(ctx)) }
+    var positionMode by remember { mutableIntStateOf(ModuleSettings.getPositionMode(ctx)) }
     var sliderX by remember { mutableFloatStateOf(ModuleSettings.getPosX(ctx).toFloat()) }
     var sliderY by remember { mutableFloatStateOf(ModuleSettings.getPosY(ctx).toFloat()) }
 
@@ -37,7 +38,6 @@ fun SettingsScreen() {
             modifier = Modifier.padding(bottom = 24.dp)
         )
 
-        // 功能开关
         Text(
             text = "功能开关",
             style = MaterialTheme.typography.titleSmall,
@@ -85,7 +85,6 @@ fun SettingsScreen() {
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // 位置微调
         Text(
             text = "位置微调",
             style = MaterialTheme.typography.titleSmall,
@@ -99,45 +98,82 @@ fun SettingsScreen() {
             )
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                FineTuneSlider(
-                    title = "X 轴（← 左 | 右 →）",
-                    value = sliderX,
-                    onValueChange = { sliderX = it },
-                    onCommit = {
-                        val x = sliderX.toInt()
-                        ModuleSettings.setPosX(ctx, x)
-                        try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
-                    },
-                    onStep = { delta ->
-                        sliderX = (sliderX + delta).coerceIn(0f, 100f)
-                        ModuleSettings.setPosX(ctx, sliderX.toInt())
-                        try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
-                    }
+                Text(
+                    text = "按钮显示行",
+                    style = MaterialTheme.typography.bodyMedium
                 )
-
                 Spacer(modifier = Modifier.height(8.dp))
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    SegmentedButton(
+                        selected = positionMode == 0,
+                        onClick = {
+                            positionMode = 0
+                            ModuleSettings.setPositionMode(ctx, 0)
+                            try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                        label = { Text("跟随原按钮") }
+                    )
+                    SegmentedButton(
+                        selected = positionMode == 1,
+                        onClick = {
+                            positionMode = 1
+                            ModuleSettings.setPositionMode(ctx, 1)
+                            try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                        label = { Text("第二行") }
+                    )
+                }
 
-                FineTuneSlider(
-                    title = "Y 轴（↑ 上 | 下 ↓）",
-                    value = sliderY,
-                    onValueChange = { sliderY = it },
-                    onCommit = {
-                        val y = sliderY.toInt()
-                        ModuleSettings.setPosY(ctx, y)
-                        try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
-                    },
-                    onStep = { delta ->
-                        sliderY = (sliderY + delta).coerceIn(0f, 100f)
-                        ModuleSettings.setPosY(ctx, sliderY.toInt())
-                        try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
-                    }
-                )
+                if (positionMode == 1) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    FineTuneSlider(
+                        title = "X 轴（← 左 | 右 →）",
+                        value = sliderX,
+                        onValueChange = { sliderX = it },
+                        onCommit = {
+                            val x = sliderX.toInt()
+                            ModuleSettings.setPosX(ctx, x)
+                            try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                        },
+                        onStep = { delta ->
+                            sliderX = (sliderX + delta).coerceIn(0f, 100f)
+                            ModuleSettings.setPosX(ctx, sliderX.toInt())
+                            try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    FineTuneSlider(
+                        title = "Y 轴（↑ 上 | 下 ↓）",
+                        value = sliderY,
+                        onValueChange = { sliderY = it },
+                        onCommit = {
+                            val y = sliderY.toInt()
+                            ModuleSettings.setPosY(ctx, y)
+                            try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                        },
+                        onStep = { delta ->
+                            sliderY = (sliderY + delta).coerceIn(0f, 100f)
+                            ModuleSettings.setPosY(ctx, sliderY.toInt())
+                            try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                        }
+                    )
+                } else {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "当前跟随 Pixel Launcher 原底部按钮位置；选择“第二行”后可使用 X/Y 精调。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        // 重启启动器
         Button(
             onClick = {
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
