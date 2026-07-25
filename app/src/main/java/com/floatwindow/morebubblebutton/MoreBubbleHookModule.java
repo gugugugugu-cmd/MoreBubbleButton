@@ -3,6 +3,7 @@ package com.floatwindow.morebubblebutton;
 import android.app.Notification;
 import android.app.PendingIntent;
 import android.annotation.SuppressLint;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
@@ -890,7 +891,7 @@ public class MoreBubbleHookModule extends XposedModule {
                     int userId = getField(key, "userId") != null ? (int) getField(key, "userId") : 0;
                     if (intent != null) {
                         findMethod(menuView.getClass(), "close", boolean.class).invoke(menuView, true);
-                        bubbleCurrentTask(ctx, intent, userId);
+                        bubbleCurrentTask(ctx, intent, task, userId);
                         new android.os.Handler(Looper.getMainLooper()).postDelayed(() -> dismissOverview(ctx), 200);
                     }
                 } catch (Throwable t) { Log.e(TAG, "menu click: " + t.getMessage()); }
@@ -920,12 +921,12 @@ public class MoreBubbleHookModule extends XposedModule {
             int userId = getField(key, "userId") != null ? (int) getField(key, "userId") : 0;
             if (intent == null) return;
 
-            bubbleCurrentTask(ctx, intent, userId);
+            bubbleCurrentTask(ctx, intent, task, userId);
             new android.os.Handler(Looper.getMainLooper()).postDelayed(() -> dismissOverview(ctx), 200);
         } catch (Throwable t) { Log.e(TAG, "onBubbleButtonClick: " + t.getMessage()); }
     }
 
-    private boolean bubbleCurrentTask(Context ctx, Intent taskIntent, int userId) {
+    private boolean bubbleCurrentTask(Context ctx, Intent taskIntent, Object task, int userId) {
         try {
             Class<?> proxyCls = mLauncherClassLoader.loadClass("com.android.quickstep.SystemUiProxy");
             Object ds = proxyCls.getField("INSTANCE").get(null);
@@ -933,8 +934,18 @@ public class MoreBubbleHookModule extends XposedModule {
             if (proxy == null) return false;
 
             Intent bIntent = new Intent(taskIntent);
+            // Always ensure package is set (BubbleData.getOrCreateBubble needs intent.getPackage())
             if (bIntent.getPackage() == null && bIntent.getComponent() != null)
                 bIntent.setPackage(bIntent.getComponent().getPackageName());
+
+            // Set the exact top component for precise bubble targeting (for deep-linked / secondary activities)
+            try {
+                Object topComponent = invoke(task, "getTopComponent");
+                String className = (String) invoke(topComponent, "getClassName");
+                if (className != null && bIntent.getPackage() != null) {
+                    bIntent.setComponent(new ComponentName(bIntent.getPackage(), className));
+                }
+            } catch (Throwable ignored) {}
 
             Object userHandle = mLauncherClassLoader.loadClass("android.os.UserHandle")
                     .getMethod("of", int.class).invoke(null, userId);
