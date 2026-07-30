@@ -1,10 +1,10 @@
-name: Build Release APK
+name: Build APK
 
 on:
   workflow_dispatch:
     inputs:
       version_name:
-        description: 'Version name (e.g. 1.7)'
+        description: 'Version name (e.g. 1.7), leave empty to read from build.gradle.kts'
         required: false
         default: ''
       create_release:
@@ -32,7 +32,16 @@ jobs:
         run: |
           echo "$KEYSTORE_BASE64" | base64 --decode > release.keystore.tmp
 
-      - name: Build Release APK
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version_name }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          echo "name=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build Debug & Release APKs
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -40,27 +49,33 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew clean assembleRelease
+          ./gradlew clean assembleDebug assembleRelease
 
-      - name: Rename APK
-        id: rename
+      - name: Rename APKs
+        id: apks
         run: |
-          VERSION="${{ github.event.inputs.version_name }}"
-          if [ -z "$VERSION" ]; then
-            # Extract versionName from build.gradle.kts
-            VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          APK_SRC="app/build/outputs/apk/release/app-release.apk"
-          APK_DST="MoreBubbleButton-v${VERSION}.apk"
-          cp "$APK_SRC" "$APK_DST"
-          echo "apk_path=$APK_DST" >> "$GITHUB_OUTPUT"
+          V="${{ steps.version.outputs.name }}"
+          RELEASE_SRC="app/build/outputs/apk/release/app-release.apk"
+          DEBUG_SRC="app/build/outputs/apk/debug/app-debug.apk"
+          RELEASE_DST="MoreBubbleButton-v${V}-release.apk"
+          DEBUG_DST="MoreBubbleButton-v${V}-debug.apk"
+          cp "$RELEASE_SRC" "$RELEASE_DST"
+          cp "$DEBUG_SRC"   "$DEBUG_DST"
+          echo "release=$RELEASE_DST" >> "$GITHUB_OUTPUT"
+          echo "debug=$DEBUG_DST"     >> "$GITHUB_OUTPUT"
 
-      - name: Upload APK artifact
+      - name: Upload Release APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MoreBubbleButton-v${{ steps.rename.outputs.version }}
-          path: ${{ steps.rename.outputs.apk_path }}
+          name: MoreBubbleButton-v${{ steps.version.outputs.name }}-release
+          path: ${{ steps.apks.outputs.release }}
+          retention-days: 30
+
+      - name: Upload Debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoreBubbleButton-v${{ steps.version.outputs.name }}-debug
+          path: ${{ steps.apks.outputs.debug }}
           retention-days: 30
 
       - name: Clean up keystore
@@ -71,7 +86,9 @@ jobs:
         if: ${{ github.event.inputs.create_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.rename.outputs.version }}
-          name: v${{ steps.rename.outputs.version }}
-          files: ${{ steps.rename.outputs.apk_path }}
+          tag_name: v${{ steps.version.outputs.name }}
+          name: v${{ steps.version.outputs.name }}
+          files: |
+            ${{ steps.apks.outputs.release }}
+            ${{ steps.apks.outputs.debug }}
           generate_release_notes: true
