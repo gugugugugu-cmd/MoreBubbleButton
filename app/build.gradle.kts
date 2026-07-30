@@ -1,3 +1,6 @@
+import java.util.Base64
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -22,16 +25,36 @@ android {
 
     signingConfigs {
         getByName("debug") {
-            storeFile = file("/mnt/TY/android/android-project/hidenavbar/NavHideModule/keystore/debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            val localKeystore = file("/mnt/TY/android/android-project/hidenavbar/NavHideModule/keystore/debug.keystore")
+            if (localKeystore.exists()) {
+                storeFile = localKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
         create("release") {
-            storeFile = file("/mnt/TY/android/android-project/WIfikeyXposed/wifikeyxposed.keystore")
-            storePassword = "tyopxn360"
-            keyAlias = "tyopxn360"
-            keyPassword = "tyopxn360"
+            // CI: read from environment variables (GitHub Secrets)
+            // Local: read from local.properties (not committed to VCS)
+            val localProps = Properties()
+            val localPropsFile = rootProject.file("local.properties")
+            if (localPropsFile.exists()) localProps.load(localPropsFile.inputStream())
+
+            val ksBase64 = System.getenv("KEYSTORE_BASE64")
+            if (ksBase64 != null) {
+                val ksFile = rootProject.file("release.keystore.tmp")
+                ksFile.writeBytes(Base64.getDecoder().decode(ksBase64))
+                storeFile = ksFile
+            } else {
+                val ksPath = localProps.getProperty("signing.storeFile")
+                if (ksPath != null) storeFile = file(ksPath)
+            }
+            storePassword = System.getenv("KEYSTORE_PASSWORD")
+                ?: localProps.getProperty("signing.storePassword")
+            keyAlias = System.getenv("KEY_ALIAS")
+                ?: localProps.getProperty("signing.keyAlias")
+            keyPassword = System.getenv("KEY_PASSWORD")
+                ?: localProps.getProperty("signing.keyPassword")
         }
     }
 
