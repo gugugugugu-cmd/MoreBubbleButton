@@ -49,6 +49,8 @@ public class MoreBubbleHookModule extends XposedModule {
             mLauncherClassLoader = param.getDefaultClassLoader();
             hookLauncher(param);
         } else if ("com.android.systemui".equals(pkg)) {
+            // SystemUI 不支持热重载，只在首次加载时 hook
+            if (!param.isFirstPackage()) return;
             ClassLoader cl = param.getDefaultClassLoader();
             hookSystemUi(cl);
         }
