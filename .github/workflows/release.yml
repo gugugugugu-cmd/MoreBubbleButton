@@ -36,7 +36,8 @@ jobs:
 
       - name: Install Android build tools and platform
         run: |
-          sdkmanager --install \
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --channel=3 \
             "platforms;android-37" \
             "build-tools;36.0.0" \
             "platform-tools"
