@@ -41,6 +41,11 @@ jobs:
           fi
           echo "name=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper
+
       - name: Build Debug & Release APKs
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
