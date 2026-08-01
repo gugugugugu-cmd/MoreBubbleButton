@@ -1117,7 +1117,14 @@ public class MoreBubbleHookModule extends XposedModule {
                 Log.w(TAG, "resolveActivity failed", t);
             }
 
-            UserHandle userHandle = UserHandle.of(userId);
+            // 使用反射创建 UserHandle，避免编译时依赖
+            UserHandle userHandle;
+            try {
+                userHandle = (UserHandle) UserHandle.class.getMethod("of", int.class).invoke(null, userId);
+            } catch (Throwable t) {
+                Log.e(TAG, "Failed to create UserHandle via reflection", t);
+                return false;
+            }
 
             Log.i(TAG, "userHandle=" + userHandle);
 
