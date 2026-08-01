@@ -20,7 +20,10 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.Toast;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -67,39 +70,48 @@ public class MoreBubbleHookModule extends XposedModule {
             Class<?> clazz = cl.loadClass(
                     "com.android.systemui.statusbar.notification.row.NotificationContentView");
             hook(clazz.getMethod("shouldShowBubbleButton")).intercept(chain -> {
+                boolean original;
+                try {
+                    original = (boolean) chain.proceed();
+                } catch (Throwable t) {
+                    Log.e(TAG, "shouldShowBubbleButton original failed", t);
+                    return false;
+                }
                 try {
                     Context ctx = null;
                     try { ctx = ((View) chain.getThisObject()).getContext(); } catch (Throwable ignored) {}
-                    if (ctx != null && !ModuleSettings.isSystemUiBubbleEnabled(ctx)) return chain.proceed();
+                    if (ctx != null && !ModuleSettings.isSystemUiBubbleEnabled(ctx)) return original;
                 } catch (Throwable ignored) {}
-                boolean original = (boolean) chain.proceed();
                 if (original) return true;
                 try {
                     Object contentView = chain.getThisObject();
                     Object row = getFieldSystemUi(contentView, "mContainingNotification");
-                    if (row == null) return true;
+                    if (row == null) return original;
                     Object adapter = getFieldSystemUi(row, "mEntryAdapter");
-                    if (adapter == null) return true;
+                    if (adapter == null) return original;
                     Object sbn = invokeSystemUi(adapter, "getSbn");
-                    if (sbn == null) return true;
+                    if (sbn == null) return original;
                     Notification notif = (Notification) invokeSystemUi(sbn, "getNotification");
-                    if (notif == null) return true;
+                    if (notif == null) return original;
                     if ((notif.flags & 0x40) != 0) return false;
                     String pkg = (String) sbn.getClass().getMethod("getPackageName").invoke(sbn);
                     Context viewCtx = ((View) contentView).getContext();
                     if (pkg == null || viewCtx.getPackageManager().getLaunchIntentForPackage(pkg) == null) return false;
                     return true;
-                } catch (Throwable t) { return true; }
+                } catch (Throwable t) {
+                    Log.w(TAG, "shouldShowBubbleButton custom check failed", t);
+                    return original;
+                }
             });
             Log.i(TAG, "Hooked shouldShowBubbleButton OK");
-        } catch (Throwable t) { Log.e(TAG, "Hook shouldShowBubbleButton: " + t.getMessage()); }
+        } catch (Throwable t) { Log.e(TAG, "Hook shouldShowBubbleButton: " + t.getMessage(), t); }
 
         // 2. injectBubbleMetadata at bind time
         try {
             Class<?> binderClass = cl.loadClass(
                     "com.android.systemui.statusbar.notification.collection.inflation.NotificationRowBinderImpl");
-            java.lang.reflect.Method target = null;
-            for (java.lang.reflect.Method m : binderClass.getDeclaredMethods()) {
+            Method target = null;
+            for (Method m : binderClass.getDeclaredMethods()) {
                 if (m.getParameterCount() >= 3 && m.getParameterTypes()[2].getName().contains("ExpandableNotificationRow")) {
                     target = m;
                     break;
@@ -120,18 +132,18 @@ public class MoreBubbleHookModule extends XposedModule {
                         if ((notif.flags & 0x40) != 0) return result;
                         if (notif.contentIntent == null) return result;
                         injectBubbleMetadata(entry, notif);
-                    } catch (Throwable t) { Log.w(TAG, "bindRow meta inject: " + t.getMessage()); }
+                    } catch (Throwable t) { Log.w(TAG, "bindRow meta inject: " + t.getMessage(), t); }
                     return result;
                 });
                 Log.i(TAG, "Hooked NotificationRowBinderImpl OK");
             }
-        } catch (Throwable t) { Log.e(TAG, "Hook RowBinder: " + t.getMessage()); }
+        } catch (Throwable t) { Log.e(TAG, "Hook RowBinder: " + t.getMessage(), t); }
 
         // 3. BubblesManager.expandStackAndSelectBubble - 拦截系统点击调用
         try {
             Class<?> bubblesCls = cl.loadClass("com.android.systemui.wmshell.BubblesManager");
-            java.lang.reflect.Method expand = null;
-            for (java.lang.reflect.Method m : bubblesCls.getDeclaredMethods()) {
+            Method expand = null;
+            for (Method m : bubblesCls.getDeclaredMethods()) {
                 if (m.getName().equals("expandStackAndSelectBubble")
                         && m.getParameterCount() == 1
                         && m.getParameterTypes()[0].getName().contains("NotificationEntry")) {
@@ -151,20 +163,20 @@ public class MoreBubbleHookModule extends XposedModule {
                                 return null;
                             }
                         }
-                    } catch (Throwable t) { Log.w(TAG, "expand guard: " + t.getMessage()); }
+                    } catch (Throwable t) { Log.w(TAG, "expand guard: " + t.getMessage(), t); }
                     return chain.proceed();
                 });
                 Log.i(TAG, "Hooked BubblesManager.expandStackAndSelectBubble OK");
             } else {
                 Log.w(TAG, "BubblesManager.expandStackAndSelectBubble(NotificationEntry) not found");
             }
-        } catch (Throwable t) { Log.w(TAG, "Hook BubblesManager: " + t.getMessage()); }
+        } catch (Throwable t) { Log.w(TAG, "Hook BubblesManager: " + t.getMessage(), t); }
 
         // 4. BubblesManager.onUserChangedBubble - 非 bubble 通知首次点击走这里，原生只折叠 shade。
         try {
             Class<?> bubblesCls = cl.loadClass("com.android.systemui.wmshell.BubblesManager");
-            java.lang.reflect.Method onUserChanged = null;
-            for (java.lang.reflect.Method m : bubblesCls.getDeclaredMethods()) {
+            Method onUserChanged = null;
+            for (Method m : bubblesCls.getDeclaredMethods()) {
                 if (m.getName().equals("onUserChangedBubble")
                         && m.getParameterCount() == 2
                         && m.getParameterTypes()[0].getName().contains("NotificationEntry")
@@ -181,19 +193,19 @@ public class MoreBubbleHookModule extends XposedModule {
                         if (enabled && entry != null && expandAppBubbleFromNotification(chain.getThisObject(), entry, "user change")) {
                             return null;
                         }
-                    } catch (Throwable t) { Log.w(TAG, "user change bubble: " + t.getMessage()); }
+                    } catch (Throwable t) { Log.w(TAG, "user change bubble: " + t.getMessage(), t); }
                     return chain.proceed();
                 });
                 Log.i(TAG, "Hooked BubblesManager.onUserChangedBubble OK");
             } else {
                 Log.w(TAG, "BubblesManager.onUserChangedBubble(NotificationEntry, boolean) not found");
             }
-        } catch (Throwable t) { Log.w(TAG, "Hook onUserChangedBubble: " + t.getMessage()); }
+        } catch (Throwable t) { Log.w(TAG, "Hook onUserChangedBubble: " + t.getMessage(), t); }
 
         // 5. dismissBubbleWithKey guard - 防止刚强制创建的气泡被 Ranking/Channel 立刻移除。
         try {
             Class<?> dataCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleData");
-            for (java.lang.reflect.Method dm : dataCls.getDeclaredMethods()) {
+            for (Method dm : dataCls.getDeclaredMethods()) {
                 if (dm.getName().equals("dismissBubbleWithKey")
                         && dm.getParameterCount() >= 2
                         && dm.getParameterTypes()[0] == int.class
@@ -207,40 +219,72 @@ public class MoreBubbleHookModule extends XposedModule {
                                 Log.i(TAG, "keep forced bubble: skip dismiss reason=" + reason + " key=" + key);
                                 return null;
                             }
-                        } catch (Throwable t) { Log.w(TAG, "dismiss guard: " + t.getMessage()); }
+                        } catch (Throwable t) { Log.w(TAG, "dismiss guard: " + t.getMessage(), t); }
                         return chain.proceed();
                     });
                 }
             }
             Log.i(TAG, "Hooked BubbleData.dismissBubbleWithKey OK");
-        } catch (Throwable t) { Log.w(TAG, "Hook dismiss guard: " + t.getMessage()); }
+        } catch (Throwable t) { Log.w(TAG, "Hook dismiss guard: " + t.getMessage(), t); }
 
         // 6. setSelectedBubbleInternal guard
         try {
             Class<?> dataCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleData");
-            java.lang.reflect.Method m = findMethodSystemUi(dataCls, "setSelectedBubbleInternal");
+            Method m = findMethodSystemUi(dataCls, "setSelectedBubbleInternal");
             if (m != null) {
                 hook(m).intercept(chain -> {
                     try {
                         Object provider = chain.getArg(0);
                         Object bubbleData = chain.getThisObject();
                         if (provider != null && provider.getClass().getName().endsWith("BubbleEntry")) {
-                            java.lang.reflect.Field f = findFieldSystemUi(bubbleData.getClass(), "mBubbles");
+                            Field f = findFieldSystemUi(bubbleData.getClass(), "mBubbles");
                             if (f != null) {
                                 f.setAccessible(true);
-                                java.util.List list = (java.util.List) f.get(bubbleData);
+                                List list = (List) f.get(bubbleData);
                                 if (list != null && !list.contains(provider)) {
                                     list.add(provider);
                                     Log.i(TAG, "BubbleData.mBubbles forcibly added BubbleEntry");
                                 }
                             }
                         }
-                    } catch (Throwable t) { Log.w(TAG, "select guard: " + t.getMessage()); }
+                    } catch (Throwable t) { Log.w(TAG, "select guard: " + t.getMessage(), t); }
                     return chain.proceed();
                 });
                 Log.i(TAG, "Hooked setSelectedBubbleInternal OK");
             }
-        } catch (Throwable t) { Log.w(TAG, "Hook select guard: " + t.getMessage()); }
+        } catch (Throwable t) { Log.w(TAG, "Hook select guard: " + t.getMessage(), t); }
+
+        // 7. (调试) Hook BubbleController.expandStackAndSelectBubble 确认请求到达
+        try {
+            Class<?> controllerClass = cl.loadClass("com.android.wm.shell.bubbles.BubbleController");
+            boolean found = false;
+            for (Method method : controllerClass.getDeclaredMethods()) {
+                if (!method.getName().equals("expandStackAndSelectBubble")) continue;
+                Log.i(TAG, "BubbleController candidate=" + method.toGenericString());
+                if (method.getParameterCount() == 4
+                        && method.getParameterTypes()[0] == Intent.class) {
+                    found = true;
+                    hook(method).intercept(chain -> {
+                        Log.i(TAG, "SYSTEMUI RECEIVED expandStackAndSelectBubble:"
+                                + " intent=" + chain.getArg(0)
+                                + " user=" + chain.getArg(1)
+                                + " entryPoint=" + chain.getArg(2)
+                                + " location=" + chain.getArg(3));
+                        try {
+                            Object result = chain.proceed();
+                            Log.i(TAG, "SYSTEMUI expandStackAndSelectBubble returned=" + result);
+                            return result;
+                        } catch (Throwable t) {
+                            Log.e(TAG, "SYSTEMUI expandStackAndSelectBubble failed", t);
+                            throw t;
+                        }
+                    });
+                }
+            }
+            Log.i(TAG, "BubbleController receiver hook installed=" + found);
+        } catch (Throwable t) {
+            Log.e(TAG, "Hook BubbleController receiver failed", t);
+        }
 
         Log.i(TAG, "All SystemUI hooks installed");
     }
@@ -299,7 +343,7 @@ public class MoreBubbleHookModule extends XposedModule {
                         Log.w(TAG, reason + ": app bubble expand method not found");
                     }
                 } catch (Throwable t) {
-                    Log.w(TAG, reason + ": app bubble expand failed: " + t.getMessage());
+                    Log.w(TAG, reason + ": app bubble expand failed: " + t.getMessage(), t);
                 }
             };
             Object executor = getFieldSystemUi(controller, "mMainExecutor");
@@ -307,7 +351,7 @@ public class MoreBubbleHookModule extends XposedModule {
             if (execute != null) execute.invoke(executor, work); else work.run();
             return true;
         } catch (Throwable t) {
-            Log.w(TAG, reason + ": app bubble schedule failed: " + t.getMessage());
+            Log.w(TAG, reason + ": app bubble schedule failed: " + t.getMessage(), t);
             return false;
         }
     }
@@ -328,7 +372,7 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             return copy;
         } catch (Throwable t) {
-            Log.w(TAG, "notification target intent: " + t.getMessage());
+            Log.w(TAG, "notification target intent: " + t.getMessage(), t);
             return null;
         }
     }
@@ -361,16 +405,16 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             if (stats == null) return;
             Object callbacks = getFieldSystemUi(bubblesManager, "mCallbacks");
-            if (callbacks instanceof java.util.List) {
-                for (Object cb : (java.util.List<?>) callbacks) {
+            if (callbacks instanceof List) {
+                for (Object cb : (List<?>) callbacks) {
                     Method remove = findMethodByNameAndCount(cb.getClass(), "removeNotification", 2);
                     if (remove != null) remove.invoke(cb, entry, stats);
                 }
                 Log.i(TAG, "dismissed clicked auto-cancel notification");
             }
         } catch (Throwable t) {
-            Throwable cause = t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null ? t.getCause() : t;
-            Log.w(TAG, "dismiss clicked notification: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
+            Throwable cause = t instanceof InvocationTargetException && t.getCause() != null ? t.getCause() : t;
+            Log.w(TAG, "dismiss clicked notification: " + cause.getClass().getSimpleName() + ": " + cause.getMessage(), cause);
         }
     }
 
@@ -401,7 +445,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Method normal = findMethodSystemUi(shadeController.getClass(), "animateCollapseShade", int.class);
             if (normal != null) normal.invoke(shadeController, 0);
         } catch (Throwable t) {
-            Log.w(TAG, "collapseShade: " + t.getMessage());
+            Log.w(TAG, "collapseShade: " + t.getMessage(), t);
         }
     }
 
@@ -442,7 +486,7 @@ public class MoreBubbleHookModule extends XposedModule {
             for (Object e : (Object[]) epCls.getDeclaredField("$VALUES").get(null)) {
                 if (name.equals(e.toString())) return e;
             }
-        } catch (Throwable t) { Log.w(TAG, "findEntryPoint: " + t.getMessage()); }
+        } catch (Throwable t) { Log.w(TAG, "findEntryPoint: " + t.getMessage(), t); }
         return null;
     }
 
@@ -464,7 +508,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
     private static void injectBubbleMetadata(Object entry, Notification notif) {
         try {
-            java.lang.reflect.Field metaField = findFieldSystemUi(entry.getClass(), "mBubbleMetadata");
+            Field metaField = findFieldSystemUi(entry.getClass(), "mBubbleMetadata");
             if (metaField == null) return;
             metaField.setAccessible(true);
             Object existing = metaField.get(entry);
@@ -477,16 +521,17 @@ public class MoreBubbleHookModule extends XposedModule {
             builder.setDeleteIntent(notif.deleteIntent);
             int iconResId = 0;
             try {
-                java.lang.reflect.Method getSmall = notif.getClass().getMethod("getSmallIcon");
+                Method getSmall = notif.getClass().getMethod("getSmallIcon");
                 Object smallIcon = getSmall.invoke(notif);
                 if (smallIcon != null) {
-                    java.lang.reflect.Method getRes = smallIcon.getClass().getMethod("getResId");
+                    Method getRes = smallIcon.getClass().getMethod("getResId");
                     iconResId = (int) getRes.invoke(smallIcon);
                 }
             } catch (Throwable ignore) {}
             String pkg = null;
             try {
-                java.lang.reflect.Method m = notif.getClass().getMethod("getPackageName");
+                // 使用 sbn 中的包名，此处通过 entry 获取 sbn 更可靠，但 entry 未传入，暂用 notif 的 fallback
+                Method m = notif.getClass().getMethod("getPackageName");
                 pkg = (String) m.invoke(notif);
             } catch (Throwable ignore) {}
             try {
@@ -498,7 +543,7 @@ public class MoreBubbleHookModule extends XposedModule {
                     return;
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "icon/shortcut set failed: " + t.getMessage());
+                Log.w(TAG, "icon/shortcut set failed: " + t.getMessage(), t);
                 return;
             }
             Notification.BubbleMetadata metadata = builder.build();
@@ -506,7 +551,7 @@ public class MoreBubbleHookModule extends XposedModule {
             metaField.set(entry, metadata);
             Log.i(TAG, "Set bubble metadata OK for " + pkg);
         } catch (Throwable t) {
-            Log.w(TAG, "injectBubbleMetadata: " + t.getMessage());
+            Log.w(TAG, "injectBubbleMetadata: " + t.getMessage(), t);
         }
     }
 
@@ -517,30 +562,55 @@ public class MoreBubbleHookModule extends XposedModule {
             return;
         } catch (Throwable ignored) {}
         try {
-            java.lang.reflect.Field f = findFieldSystemUi(notif.getClass(), "mBubbleMetadata");
+            Field f = findFieldSystemUi(notif.getClass(), "mBubbleMetadata");
             if (f == null) f = findFieldSystemUi(notif.getClass(), "bubbleMetadata");
             if (f != null) {
                 f.setAccessible(true);
                 f.set(notif, metadata);
             }
         } catch (Throwable t) {
-            Log.w(TAG, "setNotificationBubbleMetadata: " + t.getMessage());
+            Log.w(TAG, "setNotificationBubbleMetadata: " + t.getMessage(), t);
         }
     }
 
     private static Object getField(Object obj, String name) {
-        try { java.lang.reflect.Field f = obj.getClass().getDeclaredField(name); f.setAccessible(true); return f.get(obj); }
-        catch (Throwable t) { return null; }
+        if (obj == null) return null;
+        try {
+            Field f = findField(obj.getClass(), name);
+            if (f == null) {
+                Log.w(TAG, "Field not found: " + obj.getClass().getName() + "." + name);
+                return null;
+            }
+            f.setAccessible(true);
+            return f.get(obj);
+        } catch (Throwable t) {
+            Log.w(TAG, "Read field failed: " + obj.getClass().getName() + "." + name, t);
+            return null;
+        }
     }
+
     private static Object invoke(Object obj, String method) {
-        try { java.lang.reflect.Method m = findMethodSystemUi(obj.getClass(), method); return m != null ? m.invoke(obj) : null; }
-        catch (Throwable t) { return null; }
+        try {
+            Method m = findMethodSystemUi(obj.getClass(), method);
+            return m != null ? m.invoke(obj) : null;
+        } catch (Throwable t) {
+            Log.w(TAG, "invoke failed: " + method, t);
+            return null;
+        }
     }
-    private static java.lang.reflect.Field findField(Class<?> c, String n) {
-        while (c != null) { try { return c.getDeclaredField(n); } catch (NoSuchFieldException e) { c = c.getSuperclass(); } } return null;
+
+    private static Field findField(Class<?> c, String n) {
+        while (c != null) {
+            try { return c.getDeclaredField(n); } catch (NoSuchFieldException e) { c = c.getSuperclass(); }
+        }
+        return null;
     }
-    private static java.lang.reflect.Method findMethod(Class<?> c, String n, Class<?>... p) {
-        while (c != null) { try { java.lang.reflect.Method m = c.getDeclaredMethod(n, p); m.setAccessible(true); return m; } catch (NoSuchMethodException e) { c = c.getSuperclass(); } } return null;
+
+    private static Method findMethod(Class<?> c, String n, Class<?>... p) {
+        while (c != null) {
+            try { Method m = c.getDeclaredMethod(n, p); m.setAccessible(true); return m; } catch (NoSuchMethodException e) { c = c.getSuperclass(); }
+        }
+        return null;
     }
 
     private void hookLauncher(PackageLoadedParam param) {
@@ -558,7 +628,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 } catch (Throwable t) { Log.e(TAG, "inject failed", t); }
                 return ret;
             });
-        } catch (Throwable t) { Log.e(TAG, "Hook onFinishInflate: " + t.getMessage()); }
+        } catch (Throwable t) { Log.e(TAG, "Hook onFinishInflate: " + t.getMessage(), t); }
 
         // Hook OverviewActionsView.onClick
         try {
@@ -571,7 +641,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 }
                 return chain.proceed();
             });
-        } catch (Throwable t) { Log.e(TAG, "Hook onClick: " + t.getMessage()); }
+        } catch (Throwable t) { Log.e(TAG, "Hook onClick: " + t.getMessage(), t); }
 
         // Hook TaskMenuView.addMenuOptions
         try {
@@ -582,10 +652,10 @@ public class MoreBubbleHookModule extends XposedModule {
                     Context ctx = ((View) chain.getThisObject()).getContext();
                     if (ModuleSettings.isMenuEnabled(ctx))
                         addBubbleMenuOption(chain.getThisObject(), cl);
-                } catch (Throwable t) { Log.e(TAG, "addBubbleMenuOption: " + t.getMessage()); }
+                } catch (Throwable t) { Log.e(TAG, "addBubbleMenuOption: " + t.getMessage(), t); }
                 return null;
             });
-        } catch (Throwable t) { Log.e(TAG, "Hook addMenuOptions: " + t.getMessage()); }
+        } catch (Throwable t) { Log.e(TAG, "Hook addMenuOptions: " + t.getMessage(), t); }
     }
 
     // ==================== 操作栏按钮 ====================
@@ -706,7 +776,7 @@ public class MoreBubbleHookModule extends XposedModule {
                     cur = (cur.getParent() instanceof View) ? (View) cur.getParent() : null;
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "Capture RecentsView failed: " + t.getMessage());
+                Log.w(TAG, "Capture RecentsView failed: " + t.getMessage(), t);
             }
         }
 
@@ -893,14 +963,16 @@ public class MoreBubbleHookModule extends XposedModule {
                     int userId = getField(key, "userId") != null ? (int) getField(key, "userId") : 0;
                     if (intent != null) {
                         findMethod(menuView.getClass(), "close", boolean.class).invoke(menuView, true);
-                        bubbleCurrentTask(ctx, intent, task, userId);
-                        new android.os.Handler(Looper.getMainLooper()).postDelayed(() -> dismissOverview(ctx), 200);
+                        boolean invoked = bubbleCurrentTask(ctx, intent, task, userId);
+                        Log.i(TAG, "menu invocation result=" + invoked);
+                        // 调试期间暂时禁用自动退出
+                        // new android.os.Handler(Looper.getMainLooper()).postDelayed(() -> dismissOverview(ctx), 200);
                     }
-                } catch (Throwable t) { Log.e(TAG, "menu click: " + t.getMessage()); }
+                } catch (Throwable t) { Log.e(TAG, "menu click: " + t.getMessage(), t); }
             });
 
             optionLayout.addView(menuItem);
-        } catch (Throwable t) { Log.e(TAG, "addBubbleMenuOption: " + t.getMessage()); }
+        } catch (Throwable t) { Log.e(TAG, "addBubbleMenuOption: " + t.getMessage(), t); }
     }
 
     // ==================== 气泡触发 ====================
@@ -917,54 +989,286 @@ public class MoreBubbleHookModule extends XposedModule {
             List<?> tc = (List<?>) findMethod(tv.getClass(), "getTaskContainers").invoke(tv);
             if (tc == null || tc.isEmpty()) return;
 
+            Log.i(TAG, "current TaskView=" + tv);
+            Log.i(TAG, "taskContainers count=" + tc.size());
+            for (int i = 0; i < tc.size(); i++) {
+                Object container = tc.get(i);
+                Object candidateTask = findMethod(container.getClass(), "getTask").invoke(container);
+                Log.i(TAG, "taskContainer[" + i + "]=" + container + " task=" + candidateTask);
+            }
+
             Object task = findMethod(tc.get(0).getClass(), "getTask").invoke(tc.get(0));
             Object key = getField(task, "key");
             Intent intent = (Intent) getField(key, "baseIntent");
             int userId = getField(key, "userId") != null ? (int) getField(key, "userId") : 0;
             if (intent == null) return;
 
-            bubbleCurrentTask(ctx, intent, task, userId);
-            new android.os.Handler(Looper.getMainLooper()).postDelayed(() -> dismissOverview(ctx), 200);
-        } catch (Throwable t) { Log.e(TAG, "onBubbleButtonClick: " + t.getMessage()); }
+            boolean invoked = bubbleCurrentTask(ctx, intent, task, userId);
+            Log.i(TAG, "bottom button invocation result=" + invoked);
+            // 调试期间暂时禁用自动退出
+            // new android.os.Handler(Looper.getMainLooper()).postDelayed(() -> dismissOverview(ctx), 200);
+        } catch (Throwable t) { Log.e(TAG, "onBubbleButtonClick: " + t.getMessage(), t); }
     }
 
-    private boolean bubbleCurrentTask(Context ctx, Intent taskIntent, Object task, int userId) {
+    private boolean bubbleCurrentTask(
+            Context ctx,
+            Intent taskIntent,
+            Object task,
+            int userId
+    ) {
         try {
-            Class<?> proxyCls = mLauncherClassLoader.loadClass("com.android.quickstep.SystemUiProxy");
-            Object ds = proxyCls.getField("INSTANCE").get(null);
-            Object proxy = ds.getClass().getMethod("get", Context.class).invoke(ds, ctx.getApplicationContext());
-            if (proxy == null) return false;
+            Log.i(TAG, "bubbleCurrentTask begin:"
+                    + " userId=" + userId
+                    + " task=" + task
+                    + " taskIntent="
+                    + (taskIntent == null
+                    ? "null"
+                    : taskIntent.toUri(Intent.URI_INTENT_SCHEME)));
 
-            Intent bIntent = new Intent(taskIntent);
-            // Always ensure package is set (BubbleData.getOrCreateBubble needs intent.getPackage())
-            if (bIntent.getPackage() == null && bIntent.getComponent() != null)
-                bIntent.setPackage(bIntent.getComponent().getPackageName());
+            if (taskIntent == null) {
+                Log.w(TAG, "bubbleCurrentTask: taskIntent is null");
+                return false;
+            }
 
-            // Set the exact top component for precise bubble targeting (for deep-linked / secondary activities)
+            if (userId < 0) {
+                Log.w(TAG, "bubbleCurrentTask: invalid userId=" + userId);
+                return false;
+            }
+
+            Class<?> proxyCls = mLauncherClassLoader.loadClass(
+                    "com.android.quickstep.SystemUiProxy");
+
+            Object instanceHolder = proxyCls.getField("INSTANCE").get(null);
+
+            Log.i(TAG, "SystemUiProxy.INSTANCE=" + instanceHolder);
+
+            if (instanceHolder == null) {
+                Log.w(TAG, "SystemUiProxy.INSTANCE is null");
+                return false;
+            }
+
+            Object proxy = instanceHolder.getClass()
+                    .getMethod("get", Context.class)
+                    .invoke(instanceHolder, ctx.getApplicationContext());
+
+            Log.i(TAG, "SystemUiProxy object=" + proxy);
+            Log.i(TAG, "SystemUiProxy runtime class="
+                    + (proxy == null ? "null" : proxy.getClass().getName()));
+
+            if (proxy == null) {
+                Log.w(TAG, "SystemUiProxy object is null");
+                return false;
+            }
+
+            // 调试内部远程代理是否为空
+            dumpSystemUiProxyFields(proxy);
+
+            Intent bubbleIntent = new Intent(taskIntent);
+
+            if (bubbleIntent.getPackage() == null
+                    && bubbleIntent.getComponent() != null) {
+                bubbleIntent.setPackage(
+                        bubbleIntent.getComponent().getPackageName());
+            }
+
+            // 尝试定位当前任务顶部 Activity
             try {
                 Object topComponent = invoke(task, "getTopComponent");
-                String className = (String) invoke(topComponent, "getClassName");
-                if (className != null && bIntent.getPackage() != null) {
-                    bIntent.setComponent(new ComponentName(bIntent.getPackage(), className));
+
+                Log.i(TAG, "task topComponent=" + topComponent);
+
+                if (topComponent instanceof ComponentName) {
+                    ComponentName component = (ComponentName) topComponent;
+                    bubbleIntent.setComponent(component);
+
+                    if (bubbleIntent.getPackage() == null) {
+                        bubbleIntent.setPackage(component.getPackageName());
+                    }
                 }
-            } catch (Throwable ignored) {}
+            } catch (Throwable t) {
+                Log.w(TAG, "getTopComponent failed", t);
+            }
 
-            Object userHandle = mLauncherClassLoader.loadClass("android.os.UserHandle")
-                    .getMethod("of", int.class).invoke(null, userId);
+            Log.i(TAG, "final bubble intent="
+                    + bubbleIntent.toUri(Intent.URI_INTENT_SCHEME));
+            Log.i(TAG, "final component=" + bubbleIntent.getComponent());
+            Log.i(TAG, "final package=" + bubbleIntent.getPackage());
+            Log.i(TAG, "final flags=0x"
+                    + Integer.toHexString(bubbleIntent.getFlags()));
 
-            Class<?> epCls = mLauncherClassLoader.loadClass("com.android.wm.shell.shared.bubbles.logging.EntryPoint");
-            Object ep = null;
-            for (Object e : (Object[]) epCls.getDeclaredField("$VALUES").get(null))
-                if ("NOTIFICATION".equals(e.toString())) { ep = e; break; }
+            if (bubbleIntent.getPackage() == null) {
+                Log.w(TAG, "bubble intent has no package");
+                return false;
+            }
 
-            for (Method m : proxy.getClass().getMethods())
-                if (m.getName().equals("showAppBubble")) {
-                    m.invoke(proxy, bIntent, userHandle, ep, null);
-                    Log.i(TAG, "showAppBubble OK");
-                    return true;
+            try {
+                android.content.pm.ResolveInfo resolveInfo =
+                        ctx.getPackageManager().resolveActivity(
+                                bubbleIntent,
+                                android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
+
+                Log.i(TAG, "resolvedActivity="
+                        + (resolveInfo == null
+                        ? "null"
+                        : resolveInfo.activityInfo.packageName
+                        + "/"
+                        + resolveInfo.activityInfo.name));
+            } catch (Throwable t) {
+                Log.w(TAG, "resolveActivity failed", t);
+            }
+
+            UserHandle userHandle = UserHandle.of(userId);
+
+            Log.i(TAG, "userHandle=" + userHandle);
+
+            Class<?> entryPointClass = mLauncherClassLoader.loadClass(
+                    "com.android.wm.shell.shared.bubbles.logging.EntryPoint");
+
+            Object entryPoint = findLauncherEntryPoint(entryPointClass);
+
+            Log.i(TAG, "selected EntryPoint=" + entryPoint);
+
+            Method target = null;
+
+            for (Method method : proxy.getClass().getMethods()) {
+                if (!method.getName().equals("showAppBubble")) {
+                    continue;
                 }
-        } catch (Throwable t) { Log.e(TAG, "bubbleCurrentTask: " + t.getMessage()); }
+
+                Log.i(TAG, "showAppBubble candidate="
+                        + method.toGenericString()
+                        + " returnType="
+                        + method.getReturnType().getName()
+                        + " params="
+                        + Arrays.toString(method.getParameterTypes()));
+
+                if (method.getParameterCount() != 4) {
+                    continue;
+                }
+
+                Class<?>[] p = method.getParameterTypes();
+
+                if (!p[0].isAssignableFrom(Intent.class)) {
+                    continue;
+                }
+
+                if (!p[1].isAssignableFrom(UserHandle.class)) {
+                    continue;
+                }
+
+                if (entryPoint != null
+                        && !p[2].isInstance(entryPoint)) {
+                    continue;
+                }
+
+                target = method;
+                break;
+            }
+
+            if (target == null) {
+                Log.w(TAG, "No compatible showAppBubble method found");
+                return false;
+            }
+
+            Object[] args = {
+                    bubbleIntent,
+                    userHandle,
+                    entryPoint,
+                    null
+            };
+
+            Log.i(TAG, "Invoking method=" + target.toGenericString());
+            Log.i(TAG, "Invocation args=" + Arrays.toString(args));
+
+            Object result = target.invoke(proxy, args);
+
+            Log.i(TAG, "showAppBubble wrapper returned=" + result
+                    + "; returnType=" + target.getReturnType().getName()
+                    + "; this does NOT confirm bubble creation");
+
+            return true;
+
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getTargetException();
+            Log.e(TAG, "showAppBubble target exception", cause);
+        } catch (Throwable t) {
+            Log.e(TAG, "bubbleCurrentTask failed", t);
+        }
+
         return false;
+    }
+
+    /**
+     * 选择最适合的 EntryPoint 枚举（优先 OVERVIEW/LAUNCHER/RECENTS/TASKBAR，否则回退到 NOTIFICATION）
+     */
+    private Object findLauncherEntryPoint(Class<?> entryPointClass) {
+        Object[] values = entryPointClass.getEnumConstants();
+        if (values == null || values.length == 0) {
+            Log.w(TAG, "EntryPoint has no enum constants");
+            return null;
+        }
+
+        Object notificationFallback = null;
+        Object firstFallback = values[0];
+
+        for (Object value : values) {
+            String name = String.valueOf(value);
+            Log.i(TAG, "EntryPoint candidate=" + name);
+
+            if ("OVERVIEW".equals(name)
+                    || "RECENTS".equals(name)
+                    || "LAUNCHER".equals(name)
+                    || "TASKBAR".equals(name)) {
+                return value;
+            }
+
+            if ("NOTIFICATION".equals(name)) {
+                notificationFallback = value;
+            }
+        }
+
+        return notificationFallback != null ? notificationFallback : firstFallback;
+    }
+
+    /**
+     * 打印 SystemUiProxy 内部与代理相关的字段，用于确认远程 Binder 是否连接
+     */
+    private void dumpSystemUiProxyFields(Object proxy) {
+        if (proxy == null) return;
+
+        for (Class<?> c = proxy.getClass();
+             c != null;
+             c = c.getSuperclass()) {
+
+            for (Field field : c.getDeclaredFields()) {
+                String lowerName = field.getName().toLowerCase();
+
+                if (!lowerName.contains("proxy")
+                        && !lowerName.contains("systemui")
+                        && !lowerName.contains("shell")
+                        && !lowerName.contains("bubble")) {
+                    continue;
+                }
+
+                try {
+                    field.setAccessible(true);
+                    Object value = field.get(proxy);
+                    Log.i(TAG, "SystemUiProxy field "
+                            + c.getName()
+                            + "."
+                            + field.getName()
+                            + "="
+                            + value);
+                } catch (Throwable t) {
+                    Log.w(TAG, "Cannot read proxy field "
+                            + field.getName()
+                            + ": "
+                            + t.getClass().getSimpleName()
+                            + ": "
+                            + t.getMessage());
+                }
+            }
+        }
     }
 
     private Object findRecentsViewFromHierarchy(View view) {
@@ -1010,28 +1314,44 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             Runtime.getRuntime().exec(new String[]{"am", "start", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"});
             Log.i(TAG, "dismissed via am start HOME");
-        } catch (Throwable t) { Log.e(TAG, "dismiss: " + t.getMessage()); }
+        } catch (Throwable t) { Log.e(TAG, "dismiss: " + t.getMessage(), t); }
     }
 
     // ==================== 工具方法 ====================
 
     private static Object getFieldSystemUi(Object obj, String name) {
-        try { java.lang.reflect.Field f = obj.getClass().getDeclaredField(name);
-            f.setAccessible(true); return f.get(obj); }
-        catch (Throwable t) { return null; }
+        if (obj == null) return null;
+        try {
+            Field f = findFieldSystemUi(obj.getClass(), name);
+            if (f == null) return null;
+            f.setAccessible(true);
+            return f.get(obj);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private static Object invokeSystemUi(Object obj, String method) {
-        try { Method m = findMethodSystemUi(obj.getClass(), method); return m != null ? m.invoke(obj) : null; }
-        catch (Throwable t) { return null; }
+        try {
+            Method m = findMethodSystemUi(obj.getClass(), method);
+            return m != null ? m.invoke(obj) : null;
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
-    private static java.lang.reflect.Field findFieldSystemUi(Class<?> c, String n) {
-        while (c != null) { try { return c.getDeclaredField(n); } catch (NoSuchFieldException e) { c = c.getSuperclass(); } } return null;
+    private static Field findFieldSystemUi(Class<?> c, String n) {
+        while (c != null) {
+            try { return c.getDeclaredField(n); } catch (NoSuchFieldException e) { c = c.getSuperclass(); }
+        }
+        return null;
     }
 
     private static Method findMethodSystemUi(Class<?> c, String n, Class<?>... p) {
-        while (c != null) { try { Method m = c.getDeclaredMethod(n, p); m.setAccessible(true); return m; } catch (NoSuchMethodException e) { c = c.getSuperclass(); } } return null;
+        while (c != null) {
+            try { Method m = c.getDeclaredMethod(n, p); m.setAccessible(true); return m; } catch (NoSuchMethodException e) { c = c.getSuperclass(); }
+        }
+        return null;
     }
 
     private static void showToast(Context ctx, String msg) {
@@ -1080,7 +1400,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 Log.i(TAG, "Position applied: X=" + ModuleSettings.getPosX(ctx) + " Y=" + posY);
             }
         } catch (Throwable t) {
-            Log.e(TAG, "applyPositionFromSettings failed: " + t.getMessage());
+            Log.e(TAG, "applyPositionFromSettings failed: " + t.getMessage(), t);
         }
     }
 
