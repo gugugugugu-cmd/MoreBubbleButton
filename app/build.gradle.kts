@@ -83,7 +83,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // ✅ 修复：移除 excludes += "**"，确保 META-INF/xposed 资源不被排除
     packaging {
         resources {
             merges += "META-INF/xposed/*"

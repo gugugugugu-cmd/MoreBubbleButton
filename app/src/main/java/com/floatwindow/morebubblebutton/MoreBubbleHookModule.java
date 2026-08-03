@@ -41,7 +41,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
-        log("MoreBubbleModule: " + param.getProcessName() + " | API " + getApiVersion());
+        log(Log.INFO, TAG, "MoreBubbleModule: " + param.getProcessName() + " | API " + getApiVersion());
     }
 
     @Override
@@ -63,7 +63,7 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
 
     private void hookSystemUi(ClassLoader cl) {
-        log("Hooking SystemUI...");
+        log(Log.INFO, TAG, "Hooking SystemUI...");
         try {
             Class<?> clazz = cl.loadClass(
                     "com.android.systemui.statusbar.notification.row.NotificationContentView");
@@ -72,7 +72,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 try {
                     original = (boolean) chain.proceed();
                 } catch (Throwable t) {
-                    log("shouldShowBubbleButton original failed: " + t.getMessage());
+                    log(Log.INFO, TAG, "shouldShowBubbleButton original failed: " + t.getMessage());
                     return false;
                 }
                 try {
@@ -97,13 +97,13 @@ public class MoreBubbleHookModule extends XposedModule {
                     if (pkg == null || viewCtx.getPackageManager().getLaunchIntentForPackage(pkg) == null) return false;
                     return true;
                 } catch (Throwable t) {
-                    log("shouldShowBubbleButton custom check failed: " + t.getMessage());
+                    log(Log.INFO, TAG, "shouldShowBubbleButton custom check failed: " + t.getMessage());
                     return original;
                 }
             });
-            log("Hooked shouldShowBubbleButton OK");
+            log(Log.INFO, TAG, "Hooked shouldShowBubbleButton OK");
         } catch (Throwable t) {
-            log("Hook shouldShowBubbleButton: " + t.getMessage());
+            log(Log.INFO, TAG, "Hook shouldShowBubbleButton: " + t.getMessage());
         }
 
         try {
@@ -132,14 +132,14 @@ public class MoreBubbleHookModule extends XposedModule {
                         if (notif.contentIntent == null) return result;
                         injectBubbleMetadata(entry, notif);
                     } catch (Throwable t) {
-                        log("bindRow meta inject: " + t.getMessage());
+                        log(Log.INFO, TAG, "bindRow meta inject: " + t.getMessage());
                     }
                     return result;
                 });
-                log("Hooked NotificationRowBinderImpl OK");
+                log(Log.INFO, TAG, "Hooked NotificationRowBinderImpl OK");
             }
         } catch (Throwable t) {
-            log("Hook RowBinder: " + t.getMessage());
+            log(Log.INFO, TAG, "Hook RowBinder: " + t.getMessage());
         }
 
         try {
@@ -166,16 +166,16 @@ public class MoreBubbleHookModule extends XposedModule {
                             }
                         }
                     } catch (Throwable t) {
-                        log("expand guard: " + t.getMessage());
+                        log(Log.INFO, TAG, "expand guard: " + t.getMessage());
                     }
                     return chain.proceed();
                 });
-                log("Hooked BubblesManager.expandStackAndSelectBubble OK");
+                log(Log.INFO, TAG, "Hooked BubblesManager.expandStackAndSelectBubble OK");
             } else {
-                log("BubblesManager.expandStackAndSelectBubble(NotificationEntry) not found");
+                log(Log.INFO, TAG, "BubblesManager.expandStackAndSelectBubble(NotificationEntry) not found");
             }
         } catch (Throwable t) {
-            log("Hook BubblesManager: " + t.getMessage());
+            log(Log.INFO, TAG, "Hook BubblesManager: " + t.getMessage());
         }
 
         try {
@@ -199,16 +199,16 @@ public class MoreBubbleHookModule extends XposedModule {
                             return null;
                         }
                     } catch (Throwable t) {
-                        log("user change bubble: " + t.getMessage());
+                        log(Log.INFO, TAG, "user change bubble: " + t.getMessage());
                     }
                     return chain.proceed();
                 });
-                log("Hooked BubblesManager.onUserChangedBubble OK");
+                log(Log.INFO, TAG, "Hooked BubblesManager.onUserChangedBubble OK");
             } else {
-                log("BubblesManager.onUserChangedBubble(NotificationEntry, boolean) not found");
+                log(Log.INFO, TAG, "BubblesManager.onUserChangedBubble(NotificationEntry, boolean) not found");
             }
         } catch (Throwable t) {
-            log("Hook onUserChangedBubble: " + t.getMessage());
+            log(Log.INFO, TAG, "Hook onUserChangedBubble: " + t.getMessage());
         }
 
         try {
@@ -224,19 +224,19 @@ public class MoreBubbleHookModule extends XposedModule {
                             int reason = (int) chain.getArg(0);
                             String key = (String) chain.getArg(keyArgIndex);
                             if ((reason == 4 || reason == 7 || reason == 14) && isRecentlyForcedBubble(key)) {
-                                log("keep forced bubble: skip dismiss reason=" + reason + " key=" + key);
+                                log(Log.INFO, TAG, "keep forced bubble: skip dismiss reason=" + reason + " key=" + key);
                                 return null;
                             }
                         } catch (Throwable t) {
-                            log("dismiss guard: " + t.getMessage());
+                            log(Log.INFO, TAG, "dismiss guard: " + t.getMessage());
                         }
                         return chain.proceed();
                     });
                 }
             }
-            log("Hooked BubbleData.dismissBubbleWithKey OK");
+            log(Log.INFO, TAG, "Hooked BubbleData.dismissBubbleWithKey OK");
         } catch (Throwable t) {
-            log("Hook dismiss guard: " + t.getMessage());
+            log(Log.INFO, TAG, "Hook dismiss guard: " + t.getMessage());
         }
 
         try {
@@ -254,19 +254,19 @@ public class MoreBubbleHookModule extends XposedModule {
                                 List list = (List) f.get(bubbleData);
                                 if (list != null && !list.contains(provider)) {
                                     list.add(provider);
-                                    log("BubbleData.mBubbles forcibly added BubbleEntry");
+                                    log(Log.INFO, TAG, "BubbleData.mBubbles forcibly added BubbleEntry");
                                 }
                             }
                         }
                     } catch (Throwable t) {
-                        log("select guard: " + t.getMessage());
+                        log(Log.INFO, TAG, "select guard: " + t.getMessage());
                     }
                     return chain.proceed();
                 });
-                log("Hooked setSelectedBubbleInternal OK");
+                log(Log.INFO, TAG, "Hooked setSelectedBubbleInternal OK");
             }
         } catch (Throwable t) {
-            log("Hook select guard: " + t.getMessage());
+            log(Log.INFO, TAG, "Hook select guard: " + t.getMessage());
         }
 
         try {
@@ -274,33 +274,33 @@ public class MoreBubbleHookModule extends XposedModule {
             boolean found = false;
             for (Method method : controllerClass.getDeclaredMethods()) {
                 if (!method.getName().equals("expandStackAndSelectBubble")) continue;
-                log("BubbleController candidate=" + method.toGenericString());
+                log(Log.INFO, TAG, "BubbleController candidate=" + method.toGenericString());
                 if (method.getParameterCount() == 4
                         && method.getParameterTypes()[0] == Intent.class) {
                     found = true;
                     hook(method).intercept(chain -> {
-                        log("SYSTEMUI RECEIVED expandStackAndSelectBubble:"
+                        log(Log.INFO, TAG, "SYSTEMUI RECEIVED expandStackAndSelectBubble:"
                                 + " intent=" + chain.getArg(0)
                                 + " user=" + chain.getArg(1)
                                 + " entryPoint=" + chain.getArg(2)
                                 + " location=" + chain.getArg(3));
                         try {
                             Object result = chain.proceed();
-                            log("SYSTEMUI expandStackAndSelectBubble returned=" + result);
+                            log(Log.INFO, TAG, "SYSTEMUI expandStackAndSelectBubble returned=" + result);
                             return result;
                         } catch (Throwable t) {
-                            log("SYSTEMUI expandStackAndSelectBubble failed: " + t.getMessage());
+                            log(Log.INFO, TAG, "SYSTEMUI expandStackAndSelectBubble failed: " + t.getMessage());
                             throw t;
                         }
                     });
                 }
             }
-            log("BubbleController receiver hook installed=" + found);
+            log(Log.INFO, TAG, "BubbleController receiver hook installed=" + found);
         } catch (Throwable t) {
-            log("Hook BubbleController receiver failed: " + t.getMessage());
+            log(Log.INFO, TAG, "Hook BubbleController receiver failed: " + t.getMessage());
         }
 
-        log("All SystemUI hooks installed");
+        log(Log.INFO, TAG, "All SystemUI hooks installed");
     }
 
     private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {
@@ -321,7 +321,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Intent launchIntent = ctx != null ? ctx.getPackageManager().getLaunchIntentForPackage(pkg) : null;
             if (targetIntent == null) targetIntent = launchIntent;
             if (targetIntent == null || launchIntent == null) {
-                log(reason + ": skip app bubble, no target intent for " + pkg);
+                log(Log.INFO, TAG, reason + ": skip app bubble, no target intent for " + pkg);
                 collapseShadeFromManager(bubblesManager);
                 return true;
             }
@@ -350,14 +350,14 @@ public class MoreBubbleHookModule extends XposedModule {
                     }
                     if (expand != null) {
                         expand.invoke(controller, finalIntent, finalUser, entryPoint, null);
-                        log(reason + ": expanded app bubble for " + pkg);
+                        log(Log.INFO, TAG, reason + ": expanded app bubble for " + pkg);
                         runOnSysuiMain(bubblesManager, () -> dismissClickedNotificationIfAutoCancel(bubblesManager, entry));
                         runOnSysuiMain(bubblesManager, () -> collapseShadeFromManager(bubblesManager));
                     } else {
-                        log(reason + ": app bubble expand method not found");
+                        log(Log.INFO, TAG, reason + ": app bubble expand method not found");
                     }
                 } catch (Throwable t) {
-                    log(reason + ": app bubble expand failed: " + t.getMessage());
+                    log(Log.INFO, TAG, reason + ": app bubble expand failed: " + t.getMessage());
                 }
             };
             Object executor = getFieldSystemUi(controller, "mMainExecutor");
@@ -365,7 +365,7 @@ public class MoreBubbleHookModule extends XposedModule {
             if (execute != null) execute.invoke(executor, work); else work.run();
             return true;
         } catch (Throwable t) {
-            log(reason + ": app bubble schedule failed: " + t.getMessage());
+            log(Log.INFO, TAG, reason + ": app bubble schedule failed: " + t.getMessage());
             return false;
         }
     }
@@ -386,7 +386,7 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             return copy;
         } catch (Throwable t) {
-            log("notification target intent: " + t.getMessage());
+            log(Log.INFO, TAG, "notification target intent: " + t.getMessage());
             return null;
         }
     }
@@ -424,11 +424,11 @@ public class MoreBubbleHookModule extends XposedModule {
                     Method remove = findMethodByNameAndCount(cb.getClass(), "removeNotification", 2);
                     if (remove != null) remove.invoke(cb, entry, stats);
                 }
-                log("dismissed clicked auto-cancel notification");
+                log(Log.INFO, TAG, "dismissed clicked auto-cancel notification");
             }
         } catch (Throwable t) {
             Throwable cause = t instanceof InvocationTargetException && t.getCause() != null ? t.getCause() : t;
-            log("dismiss clicked notification: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
+            log(Log.INFO, TAG, "dismiss clicked notification: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
         }
     }
 
@@ -459,7 +459,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Method normal = findMethodSystemUi(shadeController.getClass(), "animateCollapseShade", int.class);
             if (normal != null) normal.invoke(shadeController, 0);
         } catch (Throwable t) {
-            log("collapseShade: " + t.getMessage());
+            log(Log.INFO, TAG, "collapseShade: " + t.getMessage());
         }
     }
 
@@ -501,7 +501,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 if (name.equals(e.toString())) return e;
             }
         } catch (Throwable t) {
-            log("findEntryPoint: " + t.getMessage());
+            log(Log.INFO, TAG, "findEntryPoint: " + t.getMessage());
         }
         return null;
     }
@@ -558,15 +558,15 @@ public class MoreBubbleHookModule extends XposedModule {
                     return;
                 }
             } catch (Throwable t) {
-                log("icon/shortcut set failed: " + t.getMessage());
+                log(Log.INFO, TAG, "icon/shortcut set failed: " + t.getMessage());
                 return;
             }
             Notification.BubbleMetadata metadata = builder.build();
             setNotificationBubbleMetadata(notif, metadata);
             metaField.set(entry, metadata);
-            log("Set bubble metadata OK for " + pkg);
+            log(Log.INFO, TAG, "Set bubble metadata OK for " + pkg);
         } catch (Throwable t) {
-            log("injectBubbleMetadata: " + t.getMessage());
+            log(Log.INFO, TAG, "injectBubbleMetadata: " + t.getMessage());
         }
     }
 
@@ -584,7 +584,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 f.set(notif, metadata);
             }
         } catch (Throwable t) {
-            log("setNotificationBubbleMetadata: " + t.getMessage());
+            log(Log.INFO, TAG, "setNotificationBubbleMetadata: " + t.getMessage());
         }
     }
 
@@ -593,13 +593,13 @@ public class MoreBubbleHookModule extends XposedModule {
         try {
             Field f = findField(obj.getClass(), name);
             if (f == null) {
-                log("Field not found: " + obj.getClass().getName() + "." + name);
+                log(Log.INFO, TAG, "Field not found: " + obj.getClass().getName() + "." + name);
                 return null;
             }
             f.setAccessible(true);
             return f.get(obj);
         } catch (Throwable t) {
-            log("Read field failed: " + obj.getClass().getName() + "." + name + ": " + t.getMessage());
+            log(Log.INFO, TAG, "Read field failed: " + obj.getClass().getName() + "." + name + ": " + t.getMessage());
             return null;
         }
     }
@@ -609,7 +609,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Method m = findMethodSystemUi(obj.getClass(), method);
             return m != null ? m.invoke(obj) : null;
         } catch (Throwable t) {
-            log("invoke failed: " + method + ": " + t.getMessage());
+            log(Log.INFO, TAG, "invoke failed: " + method + ": " + t.getMessage());
             return null;
         }
     }
@@ -640,12 +640,12 @@ public class MoreBubbleHookModule extends XposedModule {
                     if (ModuleSettings.isActionBarEnabled(ctx))
                         injectBubbleButton(chain.getThisObject(), cl);
                 } catch (Throwable t) {
-                    log("inject failed: " + t.getMessage());
+                    log(Log.INFO, TAG, "inject failed: " + t.getMessage());
                 }
                 return ret;
             });
         } catch (Throwable t) {
-            log("Hook onFinishInflate: " + t.getMessage());
+            log(Log.INFO, TAG, "Hook onFinishInflate: " + t.getMessage());
         }
 
         try {
@@ -659,7 +659,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 return chain.proceed();
             });
         } catch (Throwable t) {
-            log("Hook onClick: " + t.getMessage());
+            log(Log.INFO, TAG, "Hook onClick: " + t.getMessage());
         }
 
         try {
@@ -671,12 +671,12 @@ public class MoreBubbleHookModule extends XposedModule {
                     if (ModuleSettings.isMenuEnabled(ctx))
                         addBubbleMenuOption(chain.getThisObject(), cl);
                 } catch (Throwable t) {
-                    log("addBubbleMenuOption: " + t.getMessage());
+                    log(Log.INFO, TAG, "addBubbleMenuOption: " + t.getMessage());
                 }
                 return null;
             });
         } catch (Throwable t) {
-            log("Hook addMenuOptions: " + t.getMessage());
+            log(Log.INFO, TAG, "Hook addMenuOptions: " + t.getMessage());
         }
     }
 
@@ -720,7 +720,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
         if (sSecondRow != null) {
             sSecondRow.setLayoutParams(lp);
-            log("Position updated: X=" + posX + " Y=" + posY);
+            log(Log.INFO, TAG, "Position updated: X=" + posX + " Y=" + posY);
         }
     }
 
@@ -737,6 +737,7 @@ public class MoreBubbleHookModule extends XposedModule {
         float maxMargin = parentWidth - btnWidth;
         int marginStart = (int)((posX / 100f) * maxMargin) - iconOffset;
         lp.setMarginStart((int) Math.max(0, Math.min(marginStart, maxMargin)));
+        // 静态方法中用 Log 不影响 LSPosed 日志
         Log.i(TAG, "applyXMargin: posX=" + posX + " marginStart=" + marginStart
                 + " maxMargin=" + maxMargin + " parentW=" + parentWidth + " btnW=" + btnWidth);
     }
@@ -779,17 +780,17 @@ public class MoreBubbleHookModule extends XposedModule {
                 while (cur != null) {
                     if (rvCls.isInstance(cur)) {
                         recentsViewInstance = cur;
-                        log("Captured RecentsView in follow mode: " + cur);
+                        log(Log.INFO, TAG, "Captured RecentsView in follow mode: " + cur);
                         break;
                     }
                     cur = (cur.getParent() instanceof View) ? (View) cur.getParent() : null;
                 }
             } catch (Throwable t) {
-                log("Capture RecentsView failed: " + t.getMessage());
+                log(Log.INFO, TAG, "Capture RecentsView failed: " + t.getMessage());
             }
         }
 
-        log("Bubble button added to action_buttons (follow mode)");
+        log(Log.INFO, TAG, "Bubble button added to action_buttons (follow mode)");
     }
 
     private boolean isClearAllButton(View child) {
@@ -894,7 +895,7 @@ public class MoreBubbleHookModule extends XposedModule {
                                     sSecondRow.setLayoutParams(p);
                                     lastX = posX1;
                                     lastY = posY1;
-                                    log("live position applied: X=" + posX1 + " Y=" + posY1);
+                                    log(Log.INFO, TAG, "live position applied: X=" + posX1 + " Y=" + posY1);
                                 }
                             }
                             if (sSecondRow != null && abv2 != null)
@@ -924,7 +925,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 Object tv = findMethod(menuView.getClass(), "getTaskView").invoke(menuView);
                 if (tv != null) {
                     recentsViewInstance = findMethod(tv.getClass(), "getRecentsView").invoke(tv);
-                    log("Captured RecentsView: " + recentsViewInstance);
+                    log(Log.INFO, TAG, "Captured RecentsView: " + recentsViewInstance);
                 }
             } catch (Throwable ignored) {}
 
@@ -963,16 +964,16 @@ public class MoreBubbleHookModule extends XposedModule {
                     if (intent != null) {
                         findMethod(menuView.getClass(), "close", boolean.class).invoke(menuView, true);
                         boolean invoked = bubbleCurrentTask(ctx, intent, task, userId);
-                        log("menu invocation result=" + invoked);
+                        log(Log.INFO, TAG, "menu invocation result=" + invoked);
                     }
                 } catch (Throwable t) {
-                    log("menu click: " + t.getMessage());
+                    log(Log.INFO, TAG, "menu click: " + t.getMessage());
                 }
             });
 
             optionLayout.addView(menuItem);
         } catch (Throwable t) {
-            log("addBubbleMenuOption: " + t.getMessage());
+            log(Log.INFO, TAG, "addBubbleMenuOption: " + t.getMessage());
         }
     }
 
@@ -983,7 +984,7 @@ public class MoreBubbleHookModule extends XposedModule {
         Object rv = recentsViewInstance;
         if (rv == null) rv = findRecentsViewFromHierarchy(actionsView);
         if (rv == null) {
-            log("RecentsView not found");
+            log(Log.INFO, TAG, "RecentsView not found");
             return;
         }
 
@@ -993,12 +994,12 @@ public class MoreBubbleHookModule extends XposedModule {
             List<?> tc = (List<?>) findMethod(tv.getClass(), "getTaskContainers").invoke(tv);
             if (tc == null || tc.isEmpty()) return;
 
-            log("current TaskView=" + tv);
-            log("taskContainers count=" + tc.size());
+            log(Log.INFO, TAG, "current TaskView=" + tv);
+            log(Log.INFO, TAG, "taskContainers count=" + tc.size());
             for (int i = 0; i < tc.size(); i++) {
                 Object container = tc.get(i);
                 Object candidateTask = findMethod(container.getClass(), "getTask").invoke(container);
-                log("taskContainer[" + i + "]=" + container + " task=" + candidateTask);
+                log(Log.INFO, TAG, "taskContainer[" + i + "]=" + container + " task=" + candidateTask);
             }
 
             Object task = findMethod(tc.get(0).getClass(), "getTask").invoke(tc.get(0));
@@ -1008,9 +1009,9 @@ public class MoreBubbleHookModule extends XposedModule {
             if (intent == null) return;
 
             boolean invoked = bubbleCurrentTask(ctx, intent, task, userId);
-            log("bottom button invocation result=" + invoked);
+            log(Log.INFO, TAG, "bottom button invocation result=" + invoked);
         } catch (Throwable t) {
-            log("onBubbleButtonClick: " + t.getMessage());
+            log(Log.INFO, TAG, "onBubbleButtonClick: " + t.getMessage());
         }
     }
 
@@ -1021,7 +1022,7 @@ public class MoreBubbleHookModule extends XposedModule {
             int userId
     ) {
         try {
-            log("bubbleCurrentTask begin:"
+            log(Log.INFO, TAG, "bubbleCurrentTask begin:"
                     + " userId=" + userId
                     + " task=" + task
                     + " taskIntent="
@@ -1030,12 +1031,12 @@ public class MoreBubbleHookModule extends XposedModule {
                     : taskIntent.toUri(Intent.URI_INTENT_SCHEME)));
 
             if (taskIntent == null) {
-                log("bubbleCurrentTask: taskIntent is null");
+                log(Log.INFO, TAG, "bubbleCurrentTask: taskIntent is null");
                 return false;
             }
 
             if (userId < 0) {
-                log("bubbleCurrentTask: invalid userId=" + userId);
+                log(Log.INFO, TAG, "bubbleCurrentTask: invalid userId=" + userId);
                 return false;
             }
 
@@ -1044,10 +1045,10 @@ public class MoreBubbleHookModule extends XposedModule {
 
             Object instanceHolder = proxyCls.getField("INSTANCE").get(null);
 
-            log("SystemUiProxy.INSTANCE=" + instanceHolder);
+            log(Log.INFO, TAG, "SystemUiProxy.INSTANCE=" + instanceHolder);
 
             if (instanceHolder == null) {
-                log("SystemUiProxy.INSTANCE is null");
+                log(Log.INFO, TAG, "SystemUiProxy.INSTANCE is null");
                 return false;
             }
 
@@ -1055,12 +1056,12 @@ public class MoreBubbleHookModule extends XposedModule {
                     .getMethod("get", Context.class)
                     .invoke(instanceHolder, ctx.getApplicationContext());
 
-            log("SystemUiProxy object=" + proxy);
-            log("SystemUiProxy runtime class="
+            log(Log.INFO, TAG, "SystemUiProxy object=" + proxy);
+            log(Log.INFO, TAG, "SystemUiProxy runtime class="
                     + (proxy == null ? "null" : proxy.getClass().getName()));
 
             if (proxy == null) {
-                log("SystemUiProxy object is null");
+                log(Log.INFO, TAG, "SystemUiProxy object is null");
                 return false;
             }
 
@@ -1077,7 +1078,7 @@ public class MoreBubbleHookModule extends XposedModule {
             try {
                 Object topComponent = invoke(task, "getTopComponent");
 
-                log("task topComponent=" + topComponent);
+                log(Log.INFO, TAG, "task topComponent=" + topComponent);
 
                 if (topComponent instanceof ComponentName) {
                     ComponentName component = (ComponentName) topComponent;
@@ -1088,18 +1089,18 @@ public class MoreBubbleHookModule extends XposedModule {
                     }
                 }
             } catch (Throwable t) {
-                log("getTopComponent failed: " + t.getMessage());
+                log(Log.INFO, TAG, "getTopComponent failed: " + t.getMessage());
             }
 
-            log("final bubble intent="
+            log(Log.INFO, TAG, "final bubble intent="
                     + bubbleIntent.toUri(Intent.URI_INTENT_SCHEME));
-            log("final component=" + bubbleIntent.getComponent());
-            log("final package=" + bubbleIntent.getPackage());
-            log("final flags=0x"
+            log(Log.INFO, TAG, "final component=" + bubbleIntent.getComponent());
+            log(Log.INFO, TAG, "final package=" + bubbleIntent.getPackage());
+            log(Log.INFO, TAG, "final flags=0x"
                     + Integer.toHexString(bubbleIntent.getFlags()));
 
             if (bubbleIntent.getPackage() == null) {
-                log("bubble intent has no package");
+                log(Log.INFO, TAG, "bubble intent has no package");
                 return false;
             }
 
@@ -1109,32 +1110,32 @@ public class MoreBubbleHookModule extends XposedModule {
                                 bubbleIntent,
                                 android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
 
-                log("resolvedActivity="
+                log(Log.INFO, TAG, "resolvedActivity="
                         + (resolveInfo == null
                         ? "null"
                         : resolveInfo.activityInfo.packageName
                         + "/"
                         + resolveInfo.activityInfo.name));
             } catch (Throwable t) {
-                log("resolveActivity failed: " + t.getMessage());
+                log(Log.INFO, TAG, "resolveActivity failed: " + t.getMessage());
             }
 
             UserHandle userHandle;
             try {
                 userHandle = (UserHandle) UserHandle.class.getMethod("of", int.class).invoke(null, userId);
             } catch (Throwable t) {
-                log("Failed to create UserHandle via reflection: " + t.getMessage());
+                log(Log.INFO, TAG, "Failed to create UserHandle via reflection: " + t.getMessage());
                 return false;
             }
 
-            log("userHandle=" + userHandle);
+            log(Log.INFO, TAG, "userHandle=" + userHandle);
 
             Class<?> entryPointClass = mLauncherClassLoader.loadClass(
                     "com.android.wm.shell.shared.bubbles.logging.EntryPoint");
 
             Object entryPoint = findLauncherEntryPoint(entryPointClass);
 
-            log("selected EntryPoint=" + entryPoint);
+            log(Log.INFO, TAG, "selected EntryPoint=" + entryPoint);
 
             Method target = null;
 
@@ -1143,7 +1144,7 @@ public class MoreBubbleHookModule extends XposedModule {
                     continue;
                 }
 
-                log("showAppBubble candidate="
+                log(Log.INFO, TAG, "showAppBubble candidate="
                         + method.toGenericString()
                         + " returnType="
                         + method.getReturnType().getName()
@@ -1174,7 +1175,7 @@ public class MoreBubbleHookModule extends XposedModule {
             }
 
             if (target == null) {
-                log("No compatible showAppBubble method found");
+                log(Log.INFO, TAG, "No compatible showAppBubble method found");
                 return false;
             }
 
@@ -1185,12 +1186,12 @@ public class MoreBubbleHookModule extends XposedModule {
                     null
             };
 
-            log("Invoking method=" + target.toGenericString());
-            log("Invocation args=" + Arrays.toString(args));
+            log(Log.INFO, TAG, "Invoking method=" + target.toGenericString());
+            log(Log.INFO, TAG, "Invocation args=" + Arrays.toString(args));
 
             Object result = target.invoke(proxy, args);
 
-            log("showAppBubble wrapper returned=" + result
+            log(Log.INFO, TAG, "showAppBubble wrapper returned=" + result
                     + "; returnType=" + target.getReturnType().getName()
                     + "; this does NOT confirm bubble creation");
 
@@ -1198,9 +1199,9 @@ public class MoreBubbleHookModule extends XposedModule {
 
         } catch (InvocationTargetException e) {
             Throwable cause = e.getTargetException();
-            log("showAppBubble target exception: " + cause.getMessage());
+            log(Log.INFO, TAG, "showAppBubble target exception: " + cause.getMessage());
         } catch (Throwable t) {
-            log("bubbleCurrentTask failed: " + t.getMessage());
+            log(Log.INFO, TAG, "bubbleCurrentTask failed: " + t.getMessage());
         }
 
         return false;
@@ -1209,7 +1210,7 @@ public class MoreBubbleHookModule extends XposedModule {
     private Object findLauncherEntryPoint(Class<?> entryPointClass) {
         Object[] values = entryPointClass.getEnumConstants();
         if (values == null || values.length == 0) {
-            log("EntryPoint has no enum constants");
+            log(Log.INFO, TAG, "EntryPoint has no enum constants");
             return null;
         }
 
@@ -1218,7 +1219,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
         for (Object value : values) {
             String name = String.valueOf(value);
-            log("EntryPoint candidate=" + name);
+            log(Log.INFO, TAG, "EntryPoint candidate=" + name);
 
             if ("OVERVIEW".equals(name)
                     || "RECENTS".equals(name)
@@ -1255,14 +1256,14 @@ public class MoreBubbleHookModule extends XposedModule {
                 try {
                     field.setAccessible(true);
                     Object value = field.get(proxy);
-                    log("SystemUiProxy field "
+                    log(Log.INFO, TAG, "SystemUiProxy field "
                             + c.getName()
                             + "."
                             + field.getName()
                             + "="
                             + value);
                 } catch (Throwable t) {
-                    log("Cannot read proxy field "
+                    log(Log.INFO, TAG, "Cannot read proxy field "
                             + field.getName()
                             + ": "
                             + t.getClass().getSimpleName()
@@ -1308,14 +1309,14 @@ public class MoreBubbleHookModule extends XposedModule {
                 Object sm = findMethod(recentsViewInstance.getClass(), "getStateManager").invoke(recentsViewInstance);
                 if (sm != null) {
                     findMethod(sm.getClass(), "moveToRestState").invoke(sm);
-                    log("dismissed via moveToRestState");
+                    log(Log.INFO, TAG, "dismissed via moveToRestState");
                     return;
                 }
             }
             Runtime.getRuntime().exec(new String[]{"am", "start", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"});
-            log("dismissed via am start HOME");
+            log(Log.INFO, TAG, "dismissed via am start HOME");
         } catch (Throwable t) {
-            log("dismiss: " + t.getMessage());
+            log(Log.INFO, TAG, "dismiss: " + t.getMessage());
         }
     }
 
@@ -1363,7 +1364,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
     /**
      * 静态方法：从模块 Activity 调用，重新应用位置设置
-     * 注意：静态方法中保留 android.util.Log 以便在 logcat 中查看（不影响 LSPosed 日志）
+     * 静态方法中无法使用实例 log，保留 android.util.Log 仅用于 logcat（不影响 LSPosed 主日志）
      */
     public static void applyPositionFromSettings(Context ctx) {
         if (sSecondRow == null) {
