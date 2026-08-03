@@ -41,6 +41,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
+        // 实例方法，使用 log
         log(Log.INFO, TAG, "MoreBubbleModule: " + param.getProcessName() + " | API " + getApiVersion());
     }
 
@@ -62,6 +63,7 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
     private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
 
+    // 实例方法
     private void hookSystemUi(ClassLoader cl) {
         log(Log.INFO, TAG, "Hooking SystemUI...");
         try {
@@ -303,6 +305,7 @@ public class MoreBubbleHookModule extends XposedModule {
         log(Log.INFO, TAG, "All SystemUI hooks installed");
     }
 
+    // 静态方法 -> 使用 Log.i
     private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {
         try {
             Object sbn = getFieldSystemUi(entry, "mSbn");
@@ -321,7 +324,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Intent launchIntent = ctx != null ? ctx.getPackageManager().getLaunchIntentForPackage(pkg) : null;
             if (targetIntent == null) targetIntent = launchIntent;
             if (targetIntent == null || launchIntent == null) {
-                log(Log.INFO, TAG, reason + ": skip app bubble, no target intent for " + pkg);
+                Log.i(TAG, reason + ": skip app bubble, no target intent for " + pkg);
                 collapseShadeFromManager(bubblesManager);
                 return true;
             }
@@ -350,14 +353,14 @@ public class MoreBubbleHookModule extends XposedModule {
                     }
                     if (expand != null) {
                         expand.invoke(controller, finalIntent, finalUser, entryPoint, null);
-                        log(Log.INFO, TAG, reason + ": expanded app bubble for " + pkg);
+                        Log.i(TAG, reason + ": expanded app bubble for " + pkg);
                         runOnSysuiMain(bubblesManager, () -> dismissClickedNotificationIfAutoCancel(bubblesManager, entry));
                         runOnSysuiMain(bubblesManager, () -> collapseShadeFromManager(bubblesManager));
                     } else {
-                        log(Log.INFO, TAG, reason + ": app bubble expand method not found");
+                        Log.i(TAG, reason + ": app bubble expand method not found");
                     }
                 } catch (Throwable t) {
-                    log(Log.INFO, TAG, reason + ": app bubble expand failed: " + t.getMessage());
+                    Log.i(TAG, reason + ": app bubble expand failed: " + t.getMessage());
                 }
             };
             Object executor = getFieldSystemUi(controller, "mMainExecutor");
@@ -365,7 +368,7 @@ public class MoreBubbleHookModule extends XposedModule {
             if (execute != null) execute.invoke(executor, work); else work.run();
             return true;
         } catch (Throwable t) {
-            log(Log.INFO, TAG, reason + ": app bubble schedule failed: " + t.getMessage());
+            Log.i(TAG, reason + ": app bubble schedule failed: " + t.getMessage());
             return false;
         }
     }
@@ -386,7 +389,7 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             return copy;
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "notification target intent: " + t.getMessage());
+            Log.i(TAG, "notification target intent: " + t.getMessage());
             return null;
         }
     }
@@ -424,11 +427,11 @@ public class MoreBubbleHookModule extends XposedModule {
                     Method remove = findMethodByNameAndCount(cb.getClass(), "removeNotification", 2);
                     if (remove != null) remove.invoke(cb, entry, stats);
                 }
-                log(Log.INFO, TAG, "dismissed clicked auto-cancel notification");
+                Log.i(TAG, "dismissed clicked auto-cancel notification");
             }
         } catch (Throwable t) {
             Throwable cause = t instanceof InvocationTargetException && t.getCause() != null ? t.getCause() : t;
-            log(Log.INFO, TAG, "dismiss clicked notification: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
+            Log.i(TAG, "dismiss clicked notification: " + cause.getClass().getSimpleName() + ": " + cause.getMessage());
         }
     }
 
@@ -459,7 +462,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Method normal = findMethodSystemUi(shadeController.getClass(), "animateCollapseShade", int.class);
             if (normal != null) normal.invoke(shadeController, 0);
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "collapseShade: " + t.getMessage());
+            Log.i(TAG, "collapseShade: " + t.getMessage());
         }
     }
 
@@ -501,7 +504,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 if (name.equals(e.toString())) return e;
             }
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "findEntryPoint: " + t.getMessage());
+            Log.i(TAG, "findEntryPoint: " + t.getMessage());
         }
         return null;
     }
@@ -558,15 +561,15 @@ public class MoreBubbleHookModule extends XposedModule {
                     return;
                 }
             } catch (Throwable t) {
-                log(Log.INFO, TAG, "icon/shortcut set failed: " + t.getMessage());
+                Log.i(TAG, "icon/shortcut set failed: " + t.getMessage());
                 return;
             }
             Notification.BubbleMetadata metadata = builder.build();
             setNotificationBubbleMetadata(notif, metadata);
             metaField.set(entry, metadata);
-            log(Log.INFO, TAG, "Set bubble metadata OK for " + pkg);
+            Log.i(TAG, "Set bubble metadata OK for " + pkg);
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "injectBubbleMetadata: " + t.getMessage());
+            Log.i(TAG, "injectBubbleMetadata: " + t.getMessage());
         }
     }
 
@@ -584,7 +587,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 f.set(notif, metadata);
             }
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "setNotificationBubbleMetadata: " + t.getMessage());
+            Log.i(TAG, "setNotificationBubbleMetadata: " + t.getMessage());
         }
     }
 
@@ -593,13 +596,13 @@ public class MoreBubbleHookModule extends XposedModule {
         try {
             Field f = findField(obj.getClass(), name);
             if (f == null) {
-                log(Log.INFO, TAG, "Field not found: " + obj.getClass().getName() + "." + name);
+                Log.i(TAG, "Field not found: " + obj.getClass().getName() + "." + name);
                 return null;
             }
             f.setAccessible(true);
             return f.get(obj);
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "Read field failed: " + obj.getClass().getName() + "." + name + ": " + t.getMessage());
+            Log.i(TAG, "Read field failed: " + obj.getClass().getName() + "." + name + ": " + t.getMessage());
             return null;
         }
     }
@@ -609,7 +612,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Method m = findMethodSystemUi(obj.getClass(), method);
             return m != null ? m.invoke(obj) : null;
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "invoke failed: " + method + ": " + t.getMessage());
+            Log.i(TAG, "invoke failed: " + method + ": " + t.getMessage());
             return null;
         }
     }
@@ -628,6 +631,7 @@ public class MoreBubbleHookModule extends XposedModule {
         return null;
     }
 
+    // 实例方法
     private void hookLauncher(PackageLoadedParam param) {
         ClassLoader cl = mLauncherClassLoader;
 
@@ -680,7 +684,7 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    // ==================== 操作栏按钮 ====================
+    // ==================== 操作栏按钮（实例方法，使用 log） ====================
 
     @SuppressLint("DiscouragedApi")
     private void injectBubbleButton(Object actionsView, ClassLoader cl) {
@@ -724,6 +728,7 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
+    // 静态工具方法（被静态和实例共用，内部使用 Log.i）
     private static void applyXMargin(Context ctx, FrameLayout.LayoutParams lp) {
         int posX = ModuleSettings.getPosX(ctx);
         float density = ctx.getResources().getDisplayMetrics().density;
@@ -737,7 +742,6 @@ public class MoreBubbleHookModule extends XposedModule {
         float maxMargin = parentWidth - btnWidth;
         int marginStart = (int)((posX / 100f) * maxMargin) - iconOffset;
         lp.setMarginStart((int) Math.max(0, Math.min(marginStart, maxMargin)));
-        // 静态方法中用 Log 不影响 LSPosed 日志
         Log.i(TAG, "applyXMargin: posX=" + posX + " marginStart=" + marginStart
                 + " maxMargin=" + maxMargin + " parentW=" + parentWidth + " btnW=" + btnWidth);
     }
@@ -908,7 +912,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
     private void updateBubbleVisibility(Object av) {}
 
-    // ==================== 菜单项注入 ====================
+    // ==================== 菜单项注入（实例方法） ====================
 
     @SuppressLint("DiscouragedApi")
     private void addBubbleMenuOption(Object menuView, ClassLoader cl) {
@@ -977,7 +981,7 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    // ==================== 气泡触发 ====================
+    // ==================== 气泡触发（实例方法） ====================
 
     private void onBubbleButtonClick(View actionsView) {
         Context ctx = actionsView.getContext();
@@ -1015,6 +1019,7 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
+    // 实例方法 - 使用 log
     private boolean bubbleCurrentTask(
             Context ctx,
             Intent taskIntent,
@@ -1207,6 +1212,7 @@ public class MoreBubbleHookModule extends XposedModule {
         return false;
     }
 
+    // 实例方法
     private Object findLauncherEntryPoint(Class<?> entryPointClass) {
         Object[] values = entryPointClass.getEnumConstants();
         if (values == null || values.length == 0) {
@@ -1236,6 +1242,7 @@ public class MoreBubbleHookModule extends XposedModule {
         return notificationFallback != null ? notificationFallback : firstFallback;
     }
 
+    // 实例方法
     private void dumpSystemUiProxyFields(Object proxy) {
         if (proxy == null) return;
 
@@ -1320,7 +1327,7 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    // ==================== 工具方法 ====================
+    // ==================== 工具方法（静态） ====================
 
     private static Object getFieldSystemUi(Object obj, String name) {
         if (obj == null) return null;
