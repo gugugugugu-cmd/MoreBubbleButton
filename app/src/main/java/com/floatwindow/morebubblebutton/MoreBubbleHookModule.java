@@ -41,7 +41,6 @@ public class MoreBubbleHookModule extends XposedModule {
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
-        // 实例方法，使用 log
         log(Log.INFO, TAG, "MoreBubbleModule: " + param.getProcessName() + " | API " + getApiVersion());
     }
 
@@ -63,7 +62,6 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
     private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
 
-    // 实例方法
     private void hookSystemUi(ClassLoader cl) {
         log(Log.INFO, TAG, "Hooking SystemUI...");
         try {
@@ -305,7 +303,6 @@ public class MoreBubbleHookModule extends XposedModule {
         log(Log.INFO, TAG, "All SystemUI hooks installed");
     }
 
-    // 静态方法 -> 使用 Log.i
     private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {
         try {
             Object sbn = getFieldSystemUi(entry, "mSbn");
@@ -631,7 +628,6 @@ public class MoreBubbleHookModule extends XposedModule {
         return null;
     }
 
-    // 实例方法
     private void hookLauncher(PackageLoadedParam param) {
         ClassLoader cl = mLauncherClassLoader;
 
@@ -684,7 +680,7 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    // ==================== 操作栏按钮（实例方法，使用 log） ====================
+    // ==================== 操作栏按钮 ====================
 
     @SuppressLint("DiscouragedApi")
     private void injectBubbleButton(Object actionsView, ClassLoader cl) {
@@ -728,7 +724,6 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    // 静态工具方法（被静态和实例共用，内部使用 Log.i）
     private static void applyXMargin(Context ctx, FrameLayout.LayoutParams lp) {
         int posX = ModuleSettings.getPosX(ctx);
         float density = ctx.getResources().getDisplayMetrics().density;
@@ -912,7 +907,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
     private void updateBubbleVisibility(Object av) {}
 
-    // ==================== 菜单项注入（实例方法） ====================
+    // ==================== 菜单项注入 ====================
 
     @SuppressLint("DiscouragedApi")
     private void addBubbleMenuOption(Object menuView, ClassLoader cl) {
@@ -981,7 +976,7 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    // ==================== 气泡触发（实例方法） ====================
+    // ==================== 气泡触发 ====================
 
     private void onBubbleButtonClick(View actionsView) {
         Context ctx = actionsView.getContext();
@@ -1019,7 +1014,46 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    // 实例方法 - 使用 log
+    // ========== 核心修改：优先匹配 LAUNCHER_ICON_MENU ==========
+    private Object findLauncherEntryPoint(Class<?> entryPointClass) {
+        Object[] values = entryPointClass.getEnumConstants();
+        if (values == null || values.length == 0) {
+            log(Log.INFO, TAG, "EntryPoint has no enum constants");
+            return null;
+        }
+
+        Object notificationFallback = null;
+        Object firstFallback = values[0];
+
+        for (Object value : values) {
+            String name = String.valueOf(value);
+            log(Log.INFO, TAG, "EntryPoint candidate=" + name);
+
+            // 优先匹配 Launcher 图标菜单入口
+            if ("LAUNCHER_ICON_MENU".equals(name)) {
+                log(Log.INFO, TAG, "Selected LAUNCHER_ICON_MENU");
+                return value;
+            }
+
+            // 其次匹配任务栏菜单
+            if ("TASKBAR_ICON_MENU".equals(name)) {
+                log(Log.INFO, TAG, "Selected TASKBAR_ICON_MENU");
+                return value;
+            }
+
+            // 保留通知作为后备
+            if ("NOTIFICATION".equals(name)) {
+                notificationFallback = value;
+            }
+        }
+
+        // 如果都没有，使用 NOTIFICATION 或第一个
+        Object selected = notificationFallback != null ? notificationFallback : firstFallback;
+        log(Log.INFO, TAG, "Fallback to EntryPoint=" + selected);
+        return selected;
+    }
+
+    // 实例方法
     private boolean bubbleCurrentTask(
             Context ctx,
             Intent taskIntent,
@@ -1212,37 +1246,6 @@ public class MoreBubbleHookModule extends XposedModule {
         return false;
     }
 
-    // 实例方法
-    private Object findLauncherEntryPoint(Class<?> entryPointClass) {
-        Object[] values = entryPointClass.getEnumConstants();
-        if (values == null || values.length == 0) {
-            log(Log.INFO, TAG, "EntryPoint has no enum constants");
-            return null;
-        }
-
-        Object notificationFallback = null;
-        Object firstFallback = values[0];
-
-        for (Object value : values) {
-            String name = String.valueOf(value);
-            log(Log.INFO, TAG, "EntryPoint candidate=" + name);
-
-            if ("OVERVIEW".equals(name)
-                    || "RECENTS".equals(name)
-                    || "LAUNCHER".equals(name)
-                    || "TASKBAR".equals(name)) {
-                return value;
-            }
-
-            if ("NOTIFICATION".equals(name)) {
-                notificationFallback = value;
-            }
-        }
-
-        return notificationFallback != null ? notificationFallback : firstFallback;
-    }
-
-    // 实例方法
     private void dumpSystemUiProxyFields(Object proxy) {
         if (proxy == null) return;
 
@@ -1327,7 +1330,7 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    // ==================== 工具方法（静态） ====================
+    // ==================== 工具方法 ====================
 
     private static Object getFieldSystemUi(Object obj, String name) {
         if (obj == null) return null;
@@ -1371,7 +1374,6 @@ public class MoreBubbleHookModule extends XposedModule {
 
     /**
      * 静态方法：从模块 Activity 调用，重新应用位置设置
-     * 静态方法中无法使用实例 log，保留 android.util.Log 仅用于 logcat（不影响 LSPosed 主日志）
      */
     public static void applyPositionFromSettings(Context ctx) {
         if (sSecondRow == null) {
