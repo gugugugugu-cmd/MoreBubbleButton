@@ -34,8 +34,6 @@ android {
             }
         }
         create("release") {
-            // CI: read from environment variables (GitHub Secrets)
-            // Local: read from local.properties (not committed to VCS)
             val localProps = Properties()
             val localPropsFile = rootProject.file("local.properties")
             if (localPropsFile.exists()) localProps.load(localPropsFile.inputStream())
@@ -85,10 +83,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // ✅ 修复：移除 excludes += "**"，确保 META-INF/xposed 资源不被排除
     packaging {
         resources {
             merges += "META-INF/xposed/*"
-            excludes += "**"
         }
     }
 
