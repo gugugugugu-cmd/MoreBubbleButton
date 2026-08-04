@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam;
@@ -38,7 +39,32 @@ public class MoreBubbleHookModule extends XposedModule {
     private View bubbleButton;
     private static View sSecondRow;
     private ClassLoader mLauncherClassLoader;
+    private ClassLoader mSystemUiClassLoader;
+    private boolean mSystemUiHooksInstalled = false;
+    private final AtomicLong mRequestSequence = new AtomicLong();
+    private final java.util.Set<String> mHookedBubbleMethods =
+            java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
+    // ==================== 异常日志工具 ====================
+    private void logThrowable(String stage, Throwable throwable) {
+        Throwable real = unwrapThrowable(throwable);
+        log(Log.ERROR, TAG,
+                "MBDBG ERROR stage=" + stage
+                        + " type=" + real.getClass().getName()
+                        + " message=" + real.getMessage()
+                        + "\n" + Log.getStackTraceString(real));
+    }
+
+    private static Throwable unwrapThrowable(Throwable throwable) {
+        Throwable current = throwable;
+        while (current instanceof InvocationTargetException
+                && ((InvocationTargetException) current).getTargetException() != null) {
+            current = ((InvocationTargetException) current).getTargetException();
+        }
+        return current;
+    }
+
+    // ==================== 模块生命周期 ====================
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
         log(Log.INFO, TAG, "MoreBubbleModule: " + param.getProcessName() + " | API " + getApiVersion());
@@ -47,23 +73,68 @@ public class MoreBubbleHookModule extends XposedModule {
     @Override
     public void onPackageLoaded(PackageLoadedParam param) {
         String pkg = param.getPackageName();
+
+        log(Log.INFO, TAG,
+                "MBDBG PACKAGE_LOADED"
+                        + " package=" + pkg
+                        + " process=" + param.getProcessName()
+                        + " firstPackage=" + param.isFirstPackage()
+                        + " classLoader=" + param.getDefaultClassLoader());
+
         if ("com.google.android.apps.nexuslauncher".equals(pkg)
                 || "com.android.launcher3".equals(pkg)) {
             mLauncherClassLoader = param.getDefaultClassLoader();
+
+            log(Log.INFO, TAG,
+                    "MBDBG entering Launcher hooks:"
+                            + " package=" + pkg
+                            + " process=" + param.getProcessName());
+
             hookLauncher(param);
         } else if ("com.android.systemui".equals(pkg)) {
-            if (!param.isFirstPackage()) return;
-            ClassLoader cl = param.getDefaultClassLoader();
-            hookSystemUi(cl);
+            log(Log.INFO, TAG,
+                    "MBDBG entering SystemUI hooks:"
+                            + " process=" + param.getProcessName()
+                            + " firstPackage=" + param.isFirstPackage());
+
+            mSystemUiClassLoader = param.getDefaultClassLoader();
+            hookSystemUiOnce(mSystemUiClassLoader);
         }
     }
 
-    private ClassLoader mSystemUiClassLoader;
-    private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
-    private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
+    private synchronized void hookSystemUiOnce(ClassLoader cl) {
+        if (mSystemUiHooksInstalled) {
+            log(Log.INFO, TAG, "MBDBG SystemUI hooks already installed, skip");
+            return;
+        }
 
+        mSystemUiHooksInstalled = true;
+
+        try {
+            hookSystemUi(cl);
+        } catch (Throwable t) {
+            mSystemUiHooksInstalled = false;
+            logThrowable("hookSystemUiOnce", t);
+        }
+    }
+
+    // ==================== SystemUI Hook 主要入口 ====================
     private void hookSystemUi(ClassLoader cl) {
         log(Log.INFO, TAG, "Hooking SystemUI...");
+
+        // 诊断：dump BubbleController 结构
+        dumpBubbleControllerStructure(cl);
+
+        // 诊断：Hook 所有可能的接收方法
+        hookBubbleReceiverDiagnostics(cl);
+
+        // 诊断：Hook BubbleData
+        hookBubbleDataDiagnostics(cl);
+
+        // 诊断：dismissBubbleWithKey 只记录不阻止
+        hookDismissLogger(cl);
+
+        // 原有的功能性 Hook：shouldShowBubbleButton
         try {
             Class<?> clazz = cl.loadClass(
                     "com.android.systemui.statusbar.notification.row.NotificationContentView");
@@ -103,9 +174,10 @@ public class MoreBubbleHookModule extends XposedModule {
             });
             log(Log.INFO, TAG, "Hooked shouldShowBubbleButton OK");
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "Hook shouldShowBubbleButton: " + t.getMessage());
+            logThrowable("shouldShowBubbleButton hook", t);
         }
 
+        // injectBubbleMetadata at bind time
         try {
             Class<?> binderClass = cl.loadClass(
                     "com.android.systemui.statusbar.notification.collection.inflation.NotificationRowBinderImpl");
@@ -139,9 +211,10 @@ public class MoreBubbleHookModule extends XposedModule {
                 log(Log.INFO, TAG, "Hooked NotificationRowBinderImpl OK");
             }
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "Hook RowBinder: " + t.getMessage());
+            logThrowable("RowBinder hook", t);
         }
 
+        // 原有的 expandStackAndSelectBubble 拦截（保留，但诊断期间不修改行为，只记录）
         try {
             Class<?> bubblesCls = cl.loadClass("com.android.systemui.wmshell.BubblesManager");
             Method expand = null;
@@ -166,7 +239,7 @@ public class MoreBubbleHookModule extends XposedModule {
                             }
                         }
                     } catch (Throwable t) {
-                        log(Log.INFO, TAG, "expand guard: " + t.getMessage());
+                        logThrowable("expand guard", t);
                     }
                     return chain.proceed();
                 });
@@ -175,9 +248,10 @@ public class MoreBubbleHookModule extends XposedModule {
                 log(Log.INFO, TAG, "BubblesManager.expandStackAndSelectBubble(NotificationEntry) not found");
             }
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "Hook BubblesManager: " + t.getMessage());
+            logThrowable("Hook BubblesManager", t);
         }
 
+        // onUserChangedBubble 同样保留
         try {
             Class<?> bubblesCls = cl.loadClass("com.android.systemui.wmshell.BubblesManager");
             Method onUserChanged = null;
@@ -199,7 +273,7 @@ public class MoreBubbleHookModule extends XposedModule {
                             return null;
                         }
                     } catch (Throwable t) {
-                        log(Log.INFO, TAG, "user change bubble: " + t.getMessage());
+                        logThrowable("user change bubble", t);
                     }
                     return chain.proceed();
                 });
@@ -208,101 +282,256 @@ public class MoreBubbleHookModule extends XposedModule {
                 log(Log.INFO, TAG, "BubblesManager.onUserChangedBubble(NotificationEntry, boolean) not found");
             }
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "Hook onUserChangedBubble: " + t.getMessage());
+            logThrowable("Hook onUserChangedBubble", t);
         }
 
-        try {
-            Class<?> dataCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleData");
-            for (Method dm : dataCls.getDeclaredMethods()) {
-                if (dm.getName().equals("dismissBubbleWithKey")
-                        && dm.getParameterCount() >= 2
-                        && dm.getParameterTypes()[0] == int.class
-                        && dm.getParameterTypes()[dm.getParameterCount() - 1] == String.class) {
-                    final int keyArgIndex = dm.getParameterCount() - 1;
-                    hook(dm).intercept(chain -> {
-                        try {
-                            int reason = (int) chain.getArg(0);
-                            String key = (String) chain.getArg(keyArgIndex);
-                            if ((reason == 4 || reason == 7 || reason == 14) && isRecentlyForcedBubble(key)) {
-                                log(Log.INFO, TAG, "keep forced bubble: skip dismiss reason=" + reason + " key=" + key);
-                                return null;
-                            }
-                        } catch (Throwable t) {
-                            log(Log.INFO, TAG, "dismiss guard: " + t.getMessage());
-                        }
-                        return chain.proceed();
-                    });
-                }
-            }
-            log(Log.INFO, TAG, "Hooked BubbleData.dismissBubbleWithKey OK");
-        } catch (Throwable t) {
-            log(Log.INFO, TAG, "Hook dismiss guard: " + t.getMessage());
-        }
-
-        try {
-            Class<?> dataCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleData");
-            Method m = findMethodSystemUi(dataCls, "setSelectedBubbleInternal");
-            if (m != null) {
-                hook(m).intercept(chain -> {
-                    try {
-                        Object provider = chain.getArg(0);
-                        Object bubbleData = chain.getThisObject();
-                        if (provider != null && provider.getClass().getName().endsWith("BubbleEntry")) {
-                            Field f = findFieldSystemUi(bubbleData.getClass(), "mBubbles");
-                            if (f != null) {
-                                f.setAccessible(true);
-                                List list = (List) f.get(bubbleData);
-                                if (list != null && !list.contains(provider)) {
-                                    list.add(provider);
-                                    log(Log.INFO, TAG, "BubbleData.mBubbles forcibly added BubbleEntry");
-                                }
-                            }
-                        }
-                    } catch (Throwable t) {
-                        log(Log.INFO, TAG, "select guard: " + t.getMessage());
-                    }
-                    return chain.proceed();
-                });
-                log(Log.INFO, TAG, "Hooked setSelectedBubbleInternal OK");
-            }
-        } catch (Throwable t) {
-            log(Log.INFO, TAG, "Hook select guard: " + t.getMessage());
-        }
-
-        try {
-            Class<?> controllerClass = cl.loadClass("com.android.wm.shell.bubbles.BubbleController");
-            boolean found = false;
-            for (Method method : controllerClass.getDeclaredMethods()) {
-                if (!method.getName().equals("expandStackAndSelectBubble")) continue;
-                log(Log.INFO, TAG, "BubbleController candidate=" + method.toGenericString());
-                if (method.getParameterCount() == 4
-                        && method.getParameterTypes()[0] == Intent.class) {
-                    found = true;
-                    hook(method).intercept(chain -> {
-                        log(Log.INFO, TAG, "SYSTEMUI RECEIVED expandStackAndSelectBubble:"
-                                + " intent=" + chain.getArg(0)
-                                + " user=" + chain.getArg(1)
-                                + " entryPoint=" + chain.getArg(2)
-                                + " location=" + chain.getArg(3));
-                        try {
-                            Object result = chain.proceed();
-                            log(Log.INFO, TAG, "SYSTEMUI expandStackAndSelectBubble returned=" + result);
-                            return result;
-                        } catch (Throwable t) {
-                            log(Log.INFO, TAG, "SYSTEMUI expandStackAndSelectBubble failed: " + t.getMessage());
-                            throw t;
-                        }
-                    });
-                }
-            }
-            log(Log.INFO, TAG, "BubbleController receiver hook installed=" + found);
-        } catch (Throwable t) {
-            log(Log.INFO, TAG, "Hook BubbleController receiver failed: " + t.getMessage());
-        }
+        // 警告：以下原有的 setSelectedBubbleInternal 和 dismissBubbleWithKey 的修改行为被禁用，改为纯日志
+        // 不再添加强制修改 mBubbles 的逻辑，避免干扰诊断
 
         log(Log.INFO, TAG, "All SystemUI hooks installed");
     }
 
+    // ==================== 诊断工具：dump BubbleController 结构 ====================
+    private void dumpBubbleControllerStructure(ClassLoader cl) {
+        try {
+            Class<?> controllerClass = cl.loadClass(
+                    "com.android.wm.shell.bubbles.BubbleController");
+
+            log(Log.INFO, TAG,
+                    "MBDBG BubbleController loaded:"
+                            + " class=" + controllerClass.getName()
+                            + " loader=" + controllerClass.getClassLoader());
+
+            for (Method method : controllerClass.getDeclaredMethods()) {
+                String lower = method.getName().toLowerCase();
+                if (lower.contains("bubble")
+                        || lower.contains("expand")
+                        || lower.contains("select")) {
+                    log(Log.INFO, TAG,
+                            "MBDBG BubbleController method="
+                                    + method.toGenericString());
+                }
+            }
+
+            Class<?>[] nestedClasses = controllerClass.getDeclaredClasses();
+            log(Log.INFO, TAG,
+                    "MBDBG BubbleController nested class count="
+                            + nestedClasses.length);
+
+            for (Class<?> nested : nestedClasses) {
+                log(Log.INFO, TAG,
+                        "MBDBG BubbleController nested class="
+                                + nested.getName());
+
+                for (Method method : nested.getDeclaredMethods()) {
+                    String lower = method.getName().toLowerCase();
+                    if (lower.contains("bubble")
+                            || lower.contains("expand")
+                            || lower.contains("show")
+                            || lower.contains("select")) {
+                        log(Log.INFO, TAG,
+                                "MBDBG nested method "
+                                        + nested.getName()
+                                        + " -> "
+                                        + method.toGenericString());
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            logThrowable("dump BubbleController structure", t);
+        }
+    }
+
+    // ==================== 诊断：Hook 所有 WMShell 接收方法 ====================
+    private void hookBubbleReceiverDiagnostics(ClassLoader cl) {
+        try {
+            Class<?> controllerClass = cl.loadClass(
+                    "com.android.wm.shell.bubbles.BubbleController");
+
+            hookBubbleMethodsInClass(controllerClass);
+
+            for (Class<?> nested : controllerClass.getDeclaredClasses()) {
+                hookBubbleMethodsInClass(nested);
+            }
+        } catch (Throwable t) {
+            logThrowable("hookBubbleReceiverDiagnostics", t);
+        }
+    }
+
+    private void hookBubbleMethodsInClass(Class<?> clazz) {
+        for (Method method : clazz.getDeclaredMethods()) {
+            String methodName = method.getName();
+            boolean relevant =
+                    "showAppBubble".equals(methodName)
+                            || "expandStackAndSelectBubble".equals(methodName);
+
+            if (!relevant) {
+                continue;
+            }
+
+            String signature = method.toGenericString();
+
+            if (!mHookedBubbleMethods.add(signature)) {
+                continue;
+            }
+
+            try {
+                method.setAccessible(true);
+
+                log(Log.INFO, TAG,
+                        "MBDBG installing WMShell receiver hook: " + signature);
+
+                hook(method).intercept(chain -> {
+                    StringBuilder args = new StringBuilder();
+
+                    for (int i = 0; i < method.getParameterCount(); i++) {
+                        if (i > 0) args.append(", ");
+
+                        try {
+                            args.append("arg")
+                                    .append(i)
+                                    .append("=")
+                                    .append(chain.getArg(i));
+                        } catch (Throwable t) {
+                            args.append("arg")
+                                    .append(i)
+                                    .append("=<read failed>");
+                        }
+                    }
+
+                    log(Log.INFO, TAG,
+                            "MBDBG WMSHELL ENTER:"
+                                    + " method=" + method.toGenericString()
+                                    + " this=" + chain.getThisObject()
+                                    + " " + args);
+
+                    try {
+                        Object result = chain.proceed();
+
+                        log(Log.INFO, TAG,
+                                "MBDBG WMSHELL EXIT:"
+                                        + " method=" + method.getName()
+                                        + " result=" + result);
+
+                        return result;
+                    } catch (Throwable t) {
+                        logThrowable(
+                                "WMShell " + clazz.getName() + "." + method.getName(),
+                                t);
+                        throw t;
+                    }
+                });
+            } catch (Throwable t) {
+                logThrowable("hook WMShell method " + signature, t);
+            }
+        }
+    }
+
+    // ==================== 诊断：Hook BubbleData ====================
+    private void hookBubbleDataDiagnostics(ClassLoader cl) {
+        try {
+            Class<?> dataClass = cl.loadClass(
+                    "com.android.wm.shell.bubbles.BubbleData");
+
+            for (Method method : dataClass.getDeclaredMethods()) {
+                String name = method.getName().toLowerCase();
+
+                boolean relevant =
+                        name.contains("notificationentryupdated")
+                                || name.contains("pendingbubble")
+                                || name.contains("selectedbubble")
+                                || name.contains("expand")
+                                || name.contains("dismissbubble");
+
+                if (!relevant) {
+                    continue;
+                }
+
+                log(Log.INFO, TAG,
+                        "MBDBG BubbleData diagnostic candidate="
+                                + method.toGenericString());
+
+                method.setAccessible(true);
+
+                hook(method).intercept(chain -> {
+                    StringBuilder args = new StringBuilder();
+
+                    for (int i = 0; i < method.getParameterCount(); i++) {
+                        if (i > 0) args.append(", ");
+
+                        try {
+                            args.append(chain.getArg(i));
+                        } catch (Throwable t) {
+                            args.append("<unavailable>");
+                        }
+                    }
+
+                    log(Log.INFO, TAG,
+                            "MBDBG BUBBLEDATA ENTER:"
+                                    + " method=" + method.getName()
+                                    + " args=[" + args + "]");
+
+                    try {
+                        Object result = chain.proceed();
+
+                        log(Log.INFO, TAG,
+                                "MBDBG BUBBLEDATA EXIT:"
+                                        + " method=" + method.getName()
+                                        + " result=" + result);
+
+                        return result;
+                    } catch (Throwable t) {
+                        logThrowable("BubbleData." + method.getName(), t);
+                        throw t;
+                    }
+                });
+            }
+        } catch (Throwable t) {
+            logThrowable("hookBubbleDataDiagnostics", t);
+        }
+    }
+
+    // ==================== 诊断：dismissBubbleWithKey 纯日志 ====================
+    private void hookDismissLogger(ClassLoader cl) {
+        try {
+            Class<?> dataCls = cl.loadClass(
+                    "com.android.wm.shell.bubbles.BubbleData");
+
+            for (Method method : dataCls.getDeclaredMethods()) {
+                if (!method.getName().equals("dismissBubbleWithKey")) {
+                    continue;
+                }
+
+                method.setAccessible(true);
+
+                hook(method).intercept(chain -> {
+                    StringBuilder args = new StringBuilder();
+
+                    for (int i = 0; i < method.getParameterCount(); i++) {
+                        if (i > 0) args.append(", ");
+                        args.append("arg").append(i).append("=");
+
+                        try {
+                            args.append(chain.getArg(i));
+                        } catch (Throwable t) {
+                            args.append("<read failed>");
+                        }
+                    }
+
+                    log(Log.INFO, TAG,
+                            "MBDBG DISMISS_BUBBLE:"
+                                    + " method=" + method.toGenericString()
+                                    + " " + args);
+
+                    return chain.proceed();
+                });
+            }
+        } catch (Throwable t) {
+            logThrowable("install dismissBubbleWithKey logger", t);
+        }
+    }
+
+    // ==================== 原有的静态辅助方法（保持不变） ====================
     private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {
         try {
             Object sbn = getFieldSystemUi(entry, "mSbn");
@@ -628,9 +857,58 @@ public class MoreBubbleHookModule extends XposedModule {
         return null;
     }
 
+    // ==================== Launcher Hook ====================
     private void hookLauncher(PackageLoadedParam param) {
         ClassLoader cl = mLauncherClassLoader;
 
+        // 新增：Hook SystemUiProxy.showAppBubble 本身（诊断）
+        try {
+            Class<?> proxyClass = cl.loadClass("com.android.quickstep.SystemUiProxy");
+            boolean hooked = false;
+
+            for (Method method : proxyClass.getDeclaredMethods()) {
+                if (!"showAppBubble".equals(method.getName())) {
+                    continue;
+                }
+
+                log(Log.INFO, TAG,
+                        "MBDBG Launcher showAppBubble method found: "
+                                + method.toGenericString());
+
+                method.setAccessible(true);
+                hooked = true;
+
+                hook(method).intercept(chain -> {
+                    log(Log.INFO, TAG,
+                            "MBDBG LAUNCHER ENTER SystemUiProxy.showAppBubble:"
+                                    + " arg0=" + chain.getArg(0)
+                                    + " arg1=" + chain.getArg(1)
+                                    + " arg2=" + chain.getArg(2)
+                                    + " arg3=" + chain.getArg(3));
+
+                    try {
+                        Object result = chain.proceed();
+
+                        log(Log.INFO, TAG,
+                                "MBDBG LAUNCHER EXIT SystemUiProxy.showAppBubble:"
+                                        + " result=" + result
+                                        + " returnType=" + method.getReturnType().getName());
+
+                        return result;
+                    } catch (Throwable t) {
+                        logThrowable("Launcher hooked SystemUiProxy.showAppBubble", t);
+                        throw t;
+                    }
+                });
+            }
+
+            log(Log.INFO, TAG,
+                    "MBDBG Launcher SystemUiProxy.showAppBubble hook installed=" + hooked);
+        } catch (Throwable t) {
+            logThrowable("install Launcher SystemUiProxy.showAppBubble hook", t);
+        }
+
+        // 原有的 Hook：onFinishInflate
         try {
             hook(cl.loadClass("com.android.quickstep.views.OverviewActionsView")
                     .getMethod("onFinishInflate")).intercept(chain -> {
@@ -640,28 +918,36 @@ public class MoreBubbleHookModule extends XposedModule {
                     if (ModuleSettings.isActionBarEnabled(ctx))
                         injectBubbleButton(chain.getThisObject(), cl);
                 } catch (Throwable t) {
-                    log(Log.INFO, TAG, "inject failed: " + t.getMessage());
+                    logThrowable("inject failed", t);
                 }
                 return ret;
             });
+            log(Log.INFO, TAG, "Hooked OverviewActionsView.onFinishInflate OK");
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "Hook onFinishInflate: " + t.getMessage());
+            logThrowable("Hook onFinishInflate", t);
         }
 
+        // 原有的 Hook：onClick（保留但可能不会触发，因为按钮有自己的 OnClickListener）
         try {
             hook(cl.loadClass("com.android.quickstep.views.OverviewActionsView")
                     .getMethod("onClick", View.class)).intercept(chain -> {
                 View v = (View) chain.getArg(0);
+                log(Log.INFO, TAG,
+                        "MBDBG OverviewActionsView.onClick triggered:"
+                                + " clickedView=" + v
+                                + " bubbleButton=" + bubbleButton);
                 if (v != null && bubbleButton != null && v.getId() == bubbleButton.getId()) {
                     onBubbleButtonClick((View) chain.getThisObject());
                     return null;
                 }
                 return chain.proceed();
             });
+            log(Log.INFO, TAG, "Hooked OverviewActionsView.onClick OK");
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "Hook onClick: " + t.getMessage());
+            logThrowable("Hook onClick", t);
         }
 
+        // 原有的 Hook：TaskMenuView.addMenuOptions
         try {
             hook(cl.loadClass("com.android.quickstep.views.TaskMenuView")
                     .getDeclaredMethod("addMenuOptions")).intercept(chain -> {
@@ -671,12 +957,13 @@ public class MoreBubbleHookModule extends XposedModule {
                     if (ModuleSettings.isMenuEnabled(ctx))
                         addBubbleMenuOption(chain.getThisObject(), cl);
                 } catch (Throwable t) {
-                    log(Log.INFO, TAG, "addBubbleMenuOption: " + t.getMessage());
+                    logThrowable("addBubbleMenuOption", t);
                 }
                 return null;
             });
+            log(Log.INFO, TAG, "Hooked TaskMenuView.addMenuOptions OK");
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "Hook addMenuOptions: " + t.getMessage());
+            logThrowable("Hook addMenuOptions", t);
         }
     }
 
@@ -785,7 +1072,7 @@ public class MoreBubbleHookModule extends XposedModule {
                     cur = (cur.getParent() instanceof View) ? (View) cur.getParent() : null;
                 }
             } catch (Throwable t) {
-                log(Log.INFO, TAG, "Capture RecentsView failed: " + t.getMessage());
+                logThrowable("Capture RecentsView failed", t);
             }
         }
 
@@ -814,7 +1101,11 @@ public class MoreBubbleHookModule extends XposedModule {
             if (icon != null) btn.setCompoundDrawablesWithIntrinsicBounds(icon, null, null, null);
         }
 
-        btn.setOnClickListener(v -> onBubbleButtonClick((View) btn.getParent().getParent()));
+        btn.setOnClickListener(v -> {
+            log(Log.INFO, TAG, "MBDBG bottom button clicked, view=" + v);
+            // 传入按钮自身，而不是 parent 的 parent
+            onBubbleButtonClick(v);
+        });
         return btn;
     }
 
@@ -966,24 +1257,24 @@ public class MoreBubbleHookModule extends XposedModule {
                         log(Log.INFO, TAG, "menu invocation result=" + invoked);
                     }
                 } catch (Throwable t) {
-                    log(Log.INFO, TAG, "menu click: " + t.getMessage());
+                    logThrowable("menu click", t);
                 }
             });
 
             optionLayout.addView(menuItem);
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "addBubbleMenuOption: " + t.getMessage());
+            logThrowable("addBubbleMenuOption", t);
         }
     }
 
-    // ==================== 气泡触发 ====================
+    // ==================== 气泡触发核心逻辑 ====================
 
-    private void onBubbleButtonClick(View actionsView) {
-        Context ctx = actionsView.getContext();
+    private void onBubbleButtonClick(View sourceView) {
+        Context ctx = sourceView.getContext();
         Object rv = recentsViewInstance;
-        if (rv == null) rv = findRecentsViewFromHierarchy(actionsView);
+        if (rv == null) rv = findRecentsViewFromHierarchy(sourceView);
         if (rv == null) {
-            log(Log.INFO, TAG, "RecentsView not found");
+            log(Log.INFO, TAG, "MBDBG RecentsView not found");
             return;
         }
 
@@ -993,12 +1284,12 @@ public class MoreBubbleHookModule extends XposedModule {
             List<?> tc = (List<?>) findMethod(tv.getClass(), "getTaskContainers").invoke(tv);
             if (tc == null || tc.isEmpty()) return;
 
-            log(Log.INFO, TAG, "current TaskView=" + tv);
-            log(Log.INFO, TAG, "taskContainers count=" + tc.size());
+            log(Log.INFO, TAG, "MBDBG current TaskView=" + tv);
+            log(Log.INFO, TAG, "MBDBG taskContainers count=" + tc.size());
             for (int i = 0; i < tc.size(); i++) {
                 Object container = tc.get(i);
                 Object candidateTask = findMethod(container.getClass(), "getTask").invoke(container);
-                log(Log.INFO, TAG, "taskContainer[" + i + "]=" + container + " task=" + candidateTask);
+                log(Log.INFO, TAG, "MBDBG taskContainer[" + i + "]=" + container + " task=" + candidateTask);
             }
 
             Object task = findMethod(tc.get(0).getClass(), "getTask").invoke(tc.get(0));
@@ -1008,74 +1299,144 @@ public class MoreBubbleHookModule extends XposedModule {
             if (intent == null) return;
 
             boolean invoked = bubbleCurrentTask(ctx, intent, task, userId);
-            log(Log.INFO, TAG, "bottom button invocation result=" + invoked);
+            log(Log.INFO, TAG, "MBDBG bottom button invocation result=" + invoked);
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "onBubbleButtonClick: " + t.getMessage());
+            logThrowable("onBubbleButtonClick", t);
         }
     }
 
-    // ========== 核心修改：优先匹配 LAUNCHER_ICON_MENU ==========
+    // ==================== 修正后的 EntryPoint 选择 ====================
     private Object findLauncherEntryPoint(Class<?> entryPointClass) {
         Object[] values = entryPointClass.getEnumConstants();
+
         if (values == null || values.length == 0) {
-            log(Log.INFO, TAG, "EntryPoint has no enum constants");
+            log(Log.INFO, TAG, "MBDBG EntryPoint has no enum constants");
             return null;
         }
 
-        Object notificationFallback = null;
-        Object firstFallback = values[0];
+        Object launcher = null;
+        Object taskbar = null;
+        Object notification = null;
+        Object first = values[0];
 
         for (Object value : values) {
-            String name = String.valueOf(value);
-            log(Log.INFO, TAG, "EntryPoint candidate=" + name);
+            String name;
 
-            // 优先匹配 Launcher 图标菜单入口
+            if (value instanceof Enum) {
+                name = ((Enum<?>) value).name();
+            } else {
+                name = String.valueOf(value);
+            }
+
+            log(Log.INFO, TAG,
+                    "MBDBG EntryPoint candidate:"
+                            + " name=" + name
+                            + " class=" + value.getClass().getName());
+
             if ("LAUNCHER_ICON_MENU".equals(name)) {
-                log(Log.INFO, TAG, "Selected LAUNCHER_ICON_MENU");
-                return value;
-            }
-
-            // 其次匹配任务栏菜单
-            if ("TASKBAR_ICON_MENU".equals(name)) {
-                log(Log.INFO, TAG, "Selected TASKBAR_ICON_MENU");
-                return value;
-            }
-
-            // 保留通知作为后备
-            if ("NOTIFICATION".equals(name)) {
-                notificationFallback = value;
+                launcher = value;
+            } else if ("TASKBAR_ICON_MENU".equals(name)) {
+                taskbar = value;
+            } else if ("NOTIFICATION".equals(name)) {
+                notification = value;
             }
         }
 
-        // 如果都没有，使用 NOTIFICATION 或第一个
-        Object selected = notificationFallback != null ? notificationFallback : firstFallback;
-        log(Log.INFO, TAG, "Fallback to EntryPoint=" + selected);
+        Object selected;
+
+        if (launcher != null) {
+            selected = launcher;
+        } else if (taskbar != null) {
+            selected = taskbar;
+        } else if (notification != null) {
+            selected = notification;
+        } else {
+            selected = first;
+        }
+
+        log(Log.INFO, TAG, "MBDBG selected EntryPoint=" + selected);
         return selected;
     }
 
-    // 实例方法
+    // ==================== BubbleBarLocation 选择 ====================
+    private Object findBubbleBarLocation(Class<?> locationClass) {
+        if (locationClass == null) {
+            log(Log.INFO, TAG, "MBDBG BubbleBarLocation class is null");
+            return null;
+        }
+
+        Object[] values = locationClass.getEnumConstants();
+
+        if (values == null || values.length == 0) {
+            log(Log.INFO, TAG,
+                    "MBDBG BubbleBarLocation is not enum or has no values:"
+                            + locationClass.getName());
+            return null;
+        }
+
+        Object defaultValue = null;
+        Object rightValue = null;
+        Object leftValue = null;
+
+        for (Object value : values) {
+            String name;
+
+            if (value instanceof Enum) {
+                name = ((Enum<?>) value).name();
+            } else {
+                name = String.valueOf(value);
+            }
+
+            log(Log.INFO, TAG,
+                    "MBDBG BubbleBarLocation candidate:"
+                            + " name=" + name
+                            + " value=" + value);
+
+            if ("DEFAULT".equals(name)) {
+                defaultValue = value;
+            } else if ("RIGHT".equals(name)) {
+                rightValue = value;
+            } else if ("LEFT".equals(name)) {
+                leftValue = value;
+            }
+        }
+
+        Object selected = defaultValue != null
+                ? defaultValue
+                : rightValue != null
+                ? rightValue
+                : leftValue != null
+                ? leftValue
+                : values[0];
+
+        log(Log.INFO, TAG, "MBDBG selected BubbleBarLocation=" + selected);
+        return selected;
+    }
+
+    // ==================== 核心调用方法（重大修改） ====================
     private boolean bubbleCurrentTask(
             Context ctx,
             Intent taskIntent,
             Object task,
             int userId
     ) {
-        try {
-            log(Log.INFO, TAG, "bubbleCurrentTask begin:"
-                    + " userId=" + userId
-                    + " task=" + task
-                    + " taskIntent="
-                    + (taskIntent == null
-                    ? "null"
-                    : taskIntent.toUri(Intent.URI_INTENT_SCHEME)));
+        long requestId = mRequestSequence.incrementAndGet();
 
+        log(Log.INFO, TAG,
+                "MBDBG REQUEST_BEGIN"
+                        + " requestId=" + requestId
+                        + " userId=" + userId
+                        + " task=" + task
+                        + " taskIntent=" + taskIntent);
+
+        try {
             if (taskIntent == null) {
-                log(Log.INFO, TAG, "bubbleCurrentTask: taskIntent is null");
+                log(Log.INFO, TAG, "MBDBG REQUEST_ABORT taskIntent is null");
                 return false;
             }
 
             if (userId < 0) {
-                log(Log.INFO, TAG, "bubbleCurrentTask: invalid userId=" + userId);
+                log(Log.INFO, TAG, "MBDBG REQUEST_ABORT invalid userId=" + userId);
                 return false;
             }
 
@@ -1084,10 +1445,11 @@ public class MoreBubbleHookModule extends XposedModule {
 
             Object instanceHolder = proxyCls.getField("INSTANCE").get(null);
 
-            log(Log.INFO, TAG, "SystemUiProxy.INSTANCE=" + instanceHolder);
+            log(Log.INFO, TAG,
+                    "MBDBG SystemUiProxy.INSTANCE=" + instanceHolder);
 
             if (instanceHolder == null) {
-                log(Log.INFO, TAG, "SystemUiProxy.INSTANCE is null");
+                log(Log.INFO, TAG, "MBDBG SystemUiProxy.INSTANCE is null");
                 return false;
             }
 
@@ -1095,100 +1457,110 @@ public class MoreBubbleHookModule extends XposedModule {
                     .getMethod("get", Context.class)
                     .invoke(instanceHolder, ctx.getApplicationContext());
 
-            log(Log.INFO, TAG, "SystemUiProxy object=" + proxy);
-            log(Log.INFO, TAG, "SystemUiProxy runtime class="
-                    + (proxy == null ? "null" : proxy.getClass().getName()));
+            log(Log.INFO, TAG,
+                    "MBDBG SystemUiProxy object=" + proxy);
 
             if (proxy == null) {
-                log(Log.INFO, TAG, "SystemUiProxy object is null");
+                log(Log.INFO, TAG, "MBDBG SystemUiProxy object is null");
                 return false;
             }
 
             dumpSystemUiProxyFields(proxy);
 
-            Intent bubbleIntent = new Intent(taskIntent);
-
-            if (bubbleIntent.getPackage() == null
-                    && bubbleIntent.getComponent() != null) {
-                bubbleIntent.setPackage(
-                        bubbleIntent.getComponent().getPackageName());
+            // --- Intent 构造（不再强制覆盖为 topComponent） ---
+            String targetPackage = taskIntent.getPackage();
+            if (targetPackage == null && taskIntent.getComponent() != null) {
+                targetPackage = taskIntent.getComponent().getPackageName();
             }
 
-            try {
-                Object topComponent = invoke(task, "getTopComponent");
+            Intent packageLaunchIntent = targetPackage != null
+                    ? ctx.getPackageManager().getLaunchIntentForPackage(targetPackage)
+                    : null;
 
-                log(Log.INFO, TAG, "task topComponent=" + topComponent);
+            // 获取 topComponent 仅用于日志
+            Object topComponent = invoke(task, "getTopComponent");
+            log(Log.INFO, TAG,
+                    "MBDBG task components:"
+                            + " baseComponent=" + taskIntent.getComponent()
+                            + " topComponent=" + topComponent);
 
-                if (topComponent instanceof ComponentName) {
-                    ComponentName component = (ComponentName) topComponent;
-                    bubbleIntent.setComponent(component);
+            log(Log.INFO, TAG,
+                    "MBDBG intent comparison:"
+                            + " taskIntent=" + taskIntent
+                            + " packageLaunchIntent=" + packageLaunchIntent
+                            + " topComponent=" + topComponent);
 
-                    if (bubbleIntent.getPackage() == null) {
-                        bubbleIntent.setPackage(component.getPackageName());
-                    }
-                }
-            } catch (Throwable t) {
-                log(Log.INFO, TAG, "getTopComponent failed: " + t.getMessage());
+            // 优先使用 packageLaunchIntent
+            Intent bubbleIntent = packageLaunchIntent != null
+                    ? new Intent(packageLaunchIntent)
+                    : new Intent(taskIntent);
+
+            // 确保 package 存在
+            if (bubbleIntent.getPackage() == null && bubbleIntent.getComponent() != null) {
+                bubbleIntent.setPackage(bubbleIntent.getComponent().getPackageName());
             }
 
-            log(Log.INFO, TAG, "final bubble intent="
-                    + bubbleIntent.toUri(Intent.URI_INTENT_SCHEME));
-            log(Log.INFO, TAG, "final component=" + bubbleIntent.getComponent());
-            log(Log.INFO, TAG, "final package=" + bubbleIntent.getPackage());
-            log(Log.INFO, TAG, "final flags=0x"
+            // 添加必要的 flags（与标准 Launcher 启动一致）
+            bubbleIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+            log(Log.INFO, TAG,
+                    "MBDBG final bubble intent="
+                            + bubbleIntent.toUri(Intent.URI_INTENT_SCHEME));
+            log(Log.INFO, TAG, "MBDBG final component=" + bubbleIntent.getComponent());
+            log(Log.INFO, TAG, "MBDBG final package=" + bubbleIntent.getPackage());
+            log(Log.INFO, TAG, "MBDBG final flags=0x"
                     + Integer.toHexString(bubbleIntent.getFlags()));
 
             if (bubbleIntent.getPackage() == null) {
-                log(Log.INFO, TAG, "bubble intent has no package");
+                log(Log.INFO, TAG, "MBDBG REQUEST_ABORT bubble intent has no package");
                 return false;
             }
 
+            // 验证可解析
             try {
                 android.content.pm.ResolveInfo resolveInfo =
                         ctx.getPackageManager().resolveActivity(
                                 bubbleIntent,
                                 android.content.pm.PackageManager.MATCH_DEFAULT_ONLY);
 
-                log(Log.INFO, TAG, "resolvedActivity="
-                        + (resolveInfo == null
-                        ? "null"
-                        : resolveInfo.activityInfo.packageName
-                        + "/"
-                        + resolveInfo.activityInfo.name));
+                log(Log.INFO, TAG,
+                        "MBDBG resolvedActivity="
+                                + (resolveInfo == null
+                                ? "null"
+                                : resolveInfo.activityInfo.packageName
+                                + "/"
+                                + resolveInfo.activityInfo.name));
             } catch (Throwable t) {
-                log(Log.INFO, TAG, "resolveActivity failed: " + t.getMessage());
+                logThrowable("resolveActivity", t);
             }
 
             UserHandle userHandle;
             try {
                 userHandle = (UserHandle) UserHandle.class.getMethod("of", int.class).invoke(null, userId);
             } catch (Throwable t) {
-                log(Log.INFO, TAG, "Failed to create UserHandle via reflection: " + t.getMessage());
+                logThrowable("UserHandle creation", t);
                 return false;
             }
 
-            log(Log.INFO, TAG, "userHandle=" + userHandle);
+            log(Log.INFO, TAG, "MBDBG userHandle=" + userHandle);
 
+            // 选择 EntryPoint
             Class<?> entryPointClass = mLauncherClassLoader.loadClass(
                     "com.android.wm.shell.shared.bubbles.logging.EntryPoint");
 
             Object entryPoint = findLauncherEntryPoint(entryPointClass);
+            log(Log.INFO, TAG, "MBDBG selected EntryPoint=" + entryPoint);
 
-            log(Log.INFO, TAG, "selected EntryPoint=" + entryPoint);
-
+            // 查找兼容方法
             Method target = null;
-
             for (Method method : proxy.getClass().getMethods()) {
                 if (!method.getName().equals("showAppBubble")) {
                     continue;
                 }
 
-                log(Log.INFO, TAG, "showAppBubble candidate="
-                        + method.toGenericString()
-                        + " returnType="
-                        + method.getReturnType().getName()
-                        + " params="
-                        + Arrays.toString(method.getParameterTypes()));
+                log(Log.INFO, TAG,
+                        "MBDBG showAppBubble candidate="
+                                + method.toGenericString());
 
                 if (method.getParameterCount() != 4) {
                     continue;
@@ -1204,8 +1576,7 @@ public class MoreBubbleHookModule extends XposedModule {
                     continue;
                 }
 
-                if (entryPoint != null
-                        && !p[2].isInstance(entryPoint)) {
+                if (entryPoint != null && !p[2].isInstance(entryPoint)) {
                     continue;
                 }
 
@@ -1214,38 +1585,54 @@ public class MoreBubbleHookModule extends XposedModule {
             }
 
             if (target == null) {
-                log(Log.INFO, TAG, "No compatible showAppBubble method found");
+                log(Log.INFO, TAG, "MBDBG No compatible showAppBubble method found");
                 return false;
             }
+
+            // 获取 BubbleBarLocation
+            Class<?> locationClass = target.getParameterTypes()[3];
+            Object bubbleBarLocation = findBubbleBarLocation(locationClass);
 
             Object[] args = {
                     bubbleIntent,
                     userHandle,
                     entryPoint,
-                    null
+                    bubbleBarLocation
             };
 
-            log(Log.INFO, TAG, "Invoking method=" + target.toGenericString());
-            log(Log.INFO, TAG, "Invocation args=" + Arrays.toString(args));
+            log(Log.INFO, TAG,
+                    "MBDBG REQUEST_DISPATCH"
+                            + " requestId=" + requestId
+                            + " method=" + target.toGenericString()
+                            + " args=" + Arrays.toString(args));
+
+            log(Log.INFO, TAG,
+                    "MBDBG showAppBubble final arguments:"
+                            + " intent=" + bubbleIntent
+                            + " user=" + userHandle
+                            + " entryPoint=" + entryPoint
+                            + " location=" + bubbleBarLocation);
 
             Object result = target.invoke(proxy, args);
 
-            log(Log.INFO, TAG, "showAppBubble wrapper returned=" + result
-                    + "; returnType=" + target.getReturnType().getName()
-                    + "; this does NOT confirm bubble creation");
+            log(Log.INFO, TAG,
+                    "MBDBG REQUEST_WRAPPER_RETURNED"
+                            + " requestId=" + requestId
+                            + " result=" + result
+                            + " note=asynchronous_unconfirmed");
 
             return true;
 
         } catch (InvocationTargetException e) {
-            Throwable cause = e.getTargetException();
-            log(Log.INFO, TAG, "showAppBubble target exception: " + cause.getMessage());
+            logThrowable("Launcher SystemUiProxy.showAppBubble invocation", e);
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "bubbleCurrentTask failed: " + t.getMessage());
+            logThrowable("bubbleCurrentTask", t);
         }
 
         return false;
     }
 
+    // ==================== 辅助诊断：dump SystemUiProxy 字段 ====================
     private void dumpSystemUiProxyFields(Object proxy) {
         if (proxy == null) return;
 
@@ -1266,24 +1653,27 @@ public class MoreBubbleHookModule extends XposedModule {
                 try {
                     field.setAccessible(true);
                     Object value = field.get(proxy);
-                    log(Log.INFO, TAG, "SystemUiProxy field "
-                            + c.getName()
-                            + "."
-                            + field.getName()
-                            + "="
-                            + value);
+                    log(Log.INFO, TAG,
+                            "MBDBG SystemUiProxy field "
+                                    + c.getName()
+                                    + "."
+                                    + field.getName()
+                                    + "="
+                                    + value);
                 } catch (Throwable t) {
-                    log(Log.INFO, TAG, "Cannot read proxy field "
-                            + field.getName()
-                            + ": "
-                            + t.getClass().getSimpleName()
-                            + ": "
-                            + t.getMessage());
+                    log(Log.INFO, TAG,
+                            "MBDBG Cannot read proxy field "
+                                    + field.getName()
+                                    + ": "
+                                    + t.getClass().getSimpleName()
+                                    + ": "
+                                    + t.getMessage());
                 }
             }
         }
     }
 
+    // ==================== 查找 RecentsView ====================
     private Object findRecentsViewFromHierarchy(View view) {
         try {
             Class<?> rvCls = mLauncherClassLoader.loadClass("com.android.quickstep.views.RecentsView");
@@ -1326,11 +1716,11 @@ public class MoreBubbleHookModule extends XposedModule {
             Runtime.getRuntime().exec(new String[]{"am", "start", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"});
             log(Log.INFO, TAG, "dismissed via am start HOME");
         } catch (Throwable t) {
-            log(Log.INFO, TAG, "dismiss: " + t.getMessage());
+            logThrowable("dismiss", t);
         }
     }
 
-    // ==================== 工具方法 ====================
+    // ==================== 工具方法（静态） ====================
 
     private static Object getFieldSystemUi(Object obj, String name) {
         if (obj == null) return null;
@@ -1372,9 +1762,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show());
     }
 
-    /**
-     * 静态方法：从模块 Activity 调用，重新应用位置设置
-     */
+    // ==================== 静态方法：位置应用 ====================
     public static void applyPositionFromSettings(Context ctx) {
         if (sSecondRow == null) {
             Log.i(TAG, "applyPositionFromSettings: sSecondRow is null, settings saved for next load");
@@ -1426,4 +1814,8 @@ public class MoreBubbleHookModule extends XposedModule {
         }
         return null;
     }
+
+    // 原有的静态字段保持
+    private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
+    private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
 }
