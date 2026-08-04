@@ -131,6 +131,12 @@ public class MoreBubbleHookModule extends XposedModule {
         // 诊断：dismissBubbleWithKey 只记录不阻止
         hookDismissLogger(cl);
 
+        // 诊断：dump IBubbles Stub 结构
+        dumpIBubblesStubStructure(cl);
+
+        // 诊断：Hook IBubbles.Stub.onTransact
+        hookIBubblesStubOnTransact(cl);
+
         // 原有的功能性 Hook：shouldShowBubbleButton
         try {
             Class<?> clazz = cl.loadClass(
@@ -528,6 +534,109 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
+    // ==================== 新增诊断：dump IBubbles Stub 结构 ====================
+    private void dumpIBubblesStubStructure(ClassLoader cl) {
+        try {
+            Class<?> stubClass = cl.loadClass(
+                    "com.android.wm.shell.bubbles.IBubbles$Stub");
+
+            log(Log.INFO, TAG,
+                    "MBDBG IBubbles Stub loaded:"
+                            + " class=" + stubClass.getName()
+                            + " loader=" + stubClass.getClassLoader());
+
+            // 输出所有方法
+            for (Method method : stubClass.getDeclaredMethods()) {
+                log(Log.INFO, TAG,
+                        "MBDBG IBubbles Stub method="
+                                + method.toGenericString());
+            }
+
+            // 输出所有常量（TRANSACTION_*）
+            for (Field field : stubClass.getDeclaredFields()) {
+                if (field.getName().startsWith("TRANSACTION_")) {
+                    try {
+                        field.setAccessible(true);
+                        int code = field.getInt(null);
+                        log(Log.INFO, TAG,
+                                "MBDBG IBubbles transaction:"
+                                        + " " + field.getName()
+                                        + "=" + code);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+
+            for (Class<?> nested : stubClass.getDeclaredClasses()) {
+                log(Log.INFO, TAG,
+                        "MBDBG IBubbles Stub nested class="
+                                + nested.getName());
+
+                for (Method method : nested.getDeclaredMethods()) {
+                    log(Log.INFO, TAG,
+                            "MBDBG IBubbles Stub nested method="
+                                    + method.toGenericString());
+                }
+            }
+        } catch (Throwable t) {
+            logThrowable("dumpIBubblesStubStructure", t);
+        }
+    }
+
+    // ==================== 新增诊断：Hook IBubbles.Stub.onTransact ====================
+    private void hookIBubblesStubOnTransact(ClassLoader cl) {
+        try {
+            Class<?> stubClass = cl.loadClass(
+                    "com.android.wm.shell.bubbles.IBubbles$Stub");
+
+            Method onTransact = findMethodSystemUi(
+                    stubClass,
+                    "onTransact",
+                    int.class,
+                    Parcel.class,
+                    Parcel.class,
+                    int.class);
+
+            if (onTransact == null) {
+                log(Log.INFO, TAG,
+                        "MBDBG IBubbles.Stub.onTransact not found");
+                return;
+            }
+
+            hook(onTransact).intercept(chain -> {
+                int code = (int) chain.getArg(0);
+
+                log(Log.INFO, TAG,
+                        "MBDBG IBUBBLES_STUB ON_TRANSACT ENTER:"
+                                + " code=" + code
+                                + " flags=" + chain.getArg(3)
+                                + " this=" + chain.getThisObject());
+
+                try {
+                    Object result = chain.proceed();
+
+                    log(Log.INFO, TAG,
+                            "MBDBG IBUBBLES_STUB ON_TRANSACT EXIT:"
+                                    + " code=" + code
+                                    + " result=" + result);
+
+                    return result;
+                } catch (Throwable t) {
+                    logThrowable(
+                            "IBubbles.Stub.onTransact code=" + code,
+                            t);
+                    throw t;
+                }
+            });
+
+            log(Log.INFO, TAG,
+                    "MBDBG IBubbles.Stub.onTransact hook installed");
+
+        } catch (Throwable t) {
+            logThrowable("hookIBubblesStubOnTransact", t);
+        }
+    }
+
     // ==================== 原有的静态辅助方法（保持不变） ====================
     private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {
         try {
@@ -858,7 +967,13 @@ public class MoreBubbleHookModule extends XposedModule {
     private void hookLauncher(PackageLoadedParam param) {
         ClassLoader cl = mLauncherClassLoader;
 
-        // 新增：Hook SystemUiProxy.showAppBubble 本身（诊断）
+        // ---- 新增：Hook IBubbles$Stub$Proxy 用于确认 Binder 调用 ----
+        hookLauncherBubblesProxyDiagnostics(cl);
+
+        // ---- 新增：dump SystemUiProxy 中 bubble 相关方法 ----
+        dumpSystemUiProxyBubbleMethods(cl);
+
+        // 原有的 Hook：SystemUiProxy.showAppBubble 本身（诊断）
         try {
             Class<?> proxyClass = cl.loadClass("com.android.quickstep.SystemUiProxy");
             boolean hooked = false;
@@ -961,6 +1076,138 @@ public class MoreBubbleHookModule extends XposedModule {
             log(Log.INFO, TAG, "Hooked TaskMenuView.addMenuOptions OK");
         } catch (Throwable t) {
             logThrowable("Hook addMenuOptions", t);
+        }
+    }
+
+    // ==================== 新增：Hook IBubbles$Stub$Proxy.showAppBubble ====================
+    private void hookLauncherBubblesProxyDiagnostics(ClassLoader cl) {
+        try {
+            Class<?> proxyClass = cl.loadClass(
+                    "com.android.wm.shell.bubbles.IBubbles$Stub$Proxy");
+
+            log(Log.INFO, TAG,
+                    "MBDBG loaded IBubbles Proxy:"
+                            + " class=" + proxyClass.getName()
+                            + " loader=" + proxyClass.getClassLoader());
+
+            boolean found = false;
+
+            for (Method method : proxyClass.getDeclaredMethods()) {
+                String lower = method.getName().toLowerCase();
+
+                if (lower.contains("bubble")
+                        || lower.contains("show")
+                        || lower.contains("expand")) {
+                    log(Log.INFO, TAG,
+                            "MBDBG IBubbles Proxy method="
+                                    + method.toGenericString());
+                }
+
+                if (!"showAppBubble".equals(method.getName())) {
+                    continue;
+                }
+
+                found = true;
+                method.setAccessible(true);
+
+                log(Log.INFO, TAG,
+                        "MBDBG installing IBubbles Proxy hook: "
+                                + method.toGenericString());
+
+                hook(method).intercept(chain -> {
+                    StringBuilder args = new StringBuilder();
+
+                    for (int i = 0; i < method.getParameterCount(); i++) {
+                        if (i > 0) args.append(", ");
+
+                        try {
+                            args.append("arg")
+                                    .append(i)
+                                    .append("=")
+                                    .append(chain.getArg(i));
+                        } catch (Throwable t) {
+                            args.append("arg")
+                                    .append(i)
+                                    .append("=<unavailable>");
+                        }
+                    }
+
+                    log(Log.INFO, TAG,
+                            "MBDBG IBUBBLES_PROXY ENTER:"
+                                    + " method=" + method.toGenericString()
+                                    + " this=" + chain.getThisObject()
+                                    + " " + args);
+
+                    try {
+                        Object result = chain.proceed();
+
+                        log(Log.INFO, TAG,
+                                "MBDBG IBUBBLES_PROXY EXIT:"
+                                        + " result=" + result
+                                        + " returnType="
+                                        + method.getReturnType().getName());
+
+                        return result;
+                    } catch (Throwable t) {
+                        logThrowable("IBubbles Proxy showAppBubble", t);
+                        throw t;
+                    }
+                });
+            }
+
+            log(Log.INFO, TAG,
+                    "MBDBG IBubbles Proxy showAppBubble hook installed=" + found);
+
+        } catch (Throwable t) {
+            logThrowable("hookLauncherBubblesProxyDiagnostics", t);
+        }
+    }
+
+    // ==================== 新增：dump SystemUiProxy 中 bubble 相关方法 ====================
+    private void dumpSystemUiProxyBubbleMethods(ClassLoader cl) {
+        try {
+            Class<?> proxyClass = cl.loadClass(
+                    "com.android.quickstep.SystemUiProxy");
+
+            for (Method method : proxyClass.getDeclaredMethods()) {
+                String lower = method.getName().toLowerCase();
+
+                if (lower.contains("bubble")) {
+                    log(Log.INFO, TAG,
+                            "MBDBG SystemUiProxy bubble method="
+                                    + method.toGenericString());
+                }
+            }
+        } catch (Throwable t) {
+            logThrowable("dumpSystemUiProxyBubbleMethods", t);
+        }
+    }
+
+    // ==================== 新增：检查 Binder 状态 ====================
+    private void dumpBubblesBinderState(Object bubbles) {
+        if (bubbles == null) {
+            log(Log.INFO, TAG, "MBDBG IBubbles object is null");
+            return;
+        }
+
+        try {
+            Method asBinder = bubbles.getClass().getMethod("asBinder");
+            Object binderObject = asBinder.invoke(bubbles);
+
+            log(Log.INFO, TAG,
+                    "MBDBG IBubbles asBinder=" + binderObject);
+
+            if (binderObject instanceof IBinder) {
+                IBinder binder = (IBinder) binderObject;
+
+                log(Log.INFO, TAG,
+                        "MBDBG IBubbles binder state:"
+                                + " pingBinder=" + binder.pingBinder()
+                                + " isBinderAlive=" + binder.isBinderAlive()
+                                + " descriptor=" + binder.getInterfaceDescriptor());
+            }
+        } catch (Throwable t) {
+            logThrowable("dumpBubblesBinderState", t);
         }
     }
 
@@ -1410,7 +1657,7 @@ public class MoreBubbleHookModule extends XposedModule {
         return selected;
     }
 
-    // ==================== 核心调用方法（重大修改） ====================
+    // ==================== 核心调用方法 ====================
     private boolean bubbleCurrentTask(
             Context ctx,
             Intent taskIntent,
@@ -1463,6 +1710,10 @@ public class MoreBubbleHookModule extends XposedModule {
             }
 
             dumpSystemUiProxyFields(proxy);
+
+            // ---- 新增：检查 IBubbles Binder 状态 ----
+            Object bubbles = getField(proxy, "bubbles");
+            dumpBubblesBinderState(bubbles);
 
             // --- Intent 构造（不再强制覆盖为 topComponent） ---
             String targetPackage = taskIntent.getPackage();
