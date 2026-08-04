@@ -77,7 +77,6 @@ public class MoreBubbleHookModule extends XposedModule {
         log(Log.INFO, TAG,
                 "MBDBG PACKAGE_LOADED"
                         + " package=" + pkg
-                        + " process=" + param.getProcessName()
                         + " firstPackage=" + param.isFirstPackage()
                         + " classLoader=" + param.getDefaultClassLoader());
 
@@ -87,14 +86,12 @@ public class MoreBubbleHookModule extends XposedModule {
 
             log(Log.INFO, TAG,
                     "MBDBG entering Launcher hooks:"
-                            + " package=" + pkg
-                            + " process=" + param.getProcessName());
+                            + " package=" + pkg);
 
             hookLauncher(param);
         } else if ("com.android.systemui".equals(pkg)) {
             log(Log.INFO, TAG,
                     "MBDBG entering SystemUI hooks:"
-                            + " process=" + param.getProcessName()
                             + " firstPackage=" + param.isFirstPackage());
 
             mSystemUiClassLoader = param.getDefaultClassLoader();
