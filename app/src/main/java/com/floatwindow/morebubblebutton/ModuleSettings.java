@@ -16,6 +16,8 @@ public class ModuleSettings {
     public static final String KEY_POS_X = "pos_x"; // 0-100, 50=居中
     public static final String KEY_POS_Y = "pos_y"; // 0-100, 50=居中
     public static final String KEY_SYSTEMUI_BUBBLE_ENABLED = "systemui_bubble_enabled";
+    public static final String KEY_BUBBLE_WIDTH_PERCENT = "bubble_width_percent";
+    public static final String KEY_BUBBLE_HEIGHT_PERCENT = "bubble_height_percent";
     private static final Uri SETTINGS_URI = SettingsProvider.CONTENT_URI;
     private static final long REMOTE_CACHE_MS = 250L;
     private static volatile long sRemoteCacheAt;
@@ -117,6 +119,26 @@ public class ModuleSettings {
     }
     public static void setSystemUiBubbleEnabled(Context ctx, boolean v) {
         getPrefs(ctx).edit().putBoolean(KEY_SYSTEMUI_BUBBLE_ENABLED, v).apply();
+    }
+
+    /** Android 17 应用气泡窗口宽度百分比，默认 100% */
+    public static int getBubbleWidthPercent(Context ctx) {
+        return clampBubblePercent(getInt(ctx, KEY_BUBBLE_WIDTH_PERCENT, 100));
+    }
+    public static void setBubbleWidthPercent(Context ctx, int v) {
+        getPrefs(ctx).edit().putInt(KEY_BUBBLE_WIDTH_PERCENT, clampBubblePercent(v)).apply();
+    }
+
+    /** Android 17 应用气泡窗口高度百分比，默认 100% */
+    public static int getBubbleHeightPercent(Context ctx) {
+        return clampBubblePercent(getInt(ctx, KEY_BUBBLE_HEIGHT_PERCENT, 100));
+    }
+    public static void setBubbleHeightPercent(Context ctx, int v) {
+        getPrefs(ctx).edit().putInt(KEY_BUBBLE_HEIGHT_PERCENT, clampBubblePercent(v)).apply();
+    }
+
+    private static int clampBubblePercent(int v) {
+        return Math.max(50, Math.min(150, v));
     }
 
     private static int clampPercent(int v) {

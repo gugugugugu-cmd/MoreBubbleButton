@@ -25,6 +25,8 @@ fun SettingsScreen() {
     var positionMode by remember { mutableIntStateOf(ModuleSettings.getPositionMode(ctx)) }
     var sliderX by remember { mutableFloatStateOf(ModuleSettings.getPosX(ctx).toFloat()) }
     var sliderY by remember { mutableFloatStateOf(ModuleSettings.getPosY(ctx).toFloat()) }
+    var bubbleWidth by remember { mutableFloatStateOf(ModuleSettings.getBubbleWidthPercent(ctx).toFloat()) }
+    var bubbleHeight by remember { mutableFloatStateOf(ModuleSettings.getBubbleHeightPercent(ctx).toFloat()) }
 
     Column(
         modifier = Modifier
@@ -189,6 +191,73 @@ fun SettingsScreen() {
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        Text(
+            text = "Android 17 气泡小窗大小",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+            )
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "调整系统气泡窗口的宽度和高度；100% 为系统默认。改动立即保存，重启 SystemUI 后生效。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                FineTuneSlider(
+                    title = "宽度",
+                    value = bubbleWidth,
+                    onValueChange = { bubbleWidth = it },
+                    onCommit = {
+                        ModuleSettings.setBubbleWidthPercent(ctx, bubbleWidth.toInt())
+                    },
+                    onStep = { delta ->
+                        bubbleWidth = (bubbleWidth + delta).coerceIn(50f, 150f)
+                        ModuleSettings.setBubbleWidthPercent(ctx, bubbleWidth.toInt())
+                    },
+                    valueRange = 50f..150f,
+                    steps = 99,
+                    suffix = "%"
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                FineTuneSlider(
+                    title = "高度",
+                    value = bubbleHeight,
+                    onValueChange = { bubbleHeight = it },
+                    onCommit = {
+                        ModuleSettings.setBubbleHeightPercent(ctx, bubbleHeight.toInt())
+                    },
+                    onStep = { delta ->
+                        bubbleHeight = (bubbleHeight + delta).coerceIn(50f, 150f)
+                        ModuleSettings.setBubbleHeightPercent(ctx, bubbleHeight.toInt())
+                    },
+                    valueRange = 50f..150f,
+                    steps = 99,
+                    suffix = "%"
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        bubbleWidth = 100f
+                        bubbleHeight = 100f
+                        ModuleSettings.setBubbleWidthPercent(ctx, 100)
+                        ModuleSettings.setBubbleHeightPercent(ctx, 100)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("恢复系统默认大小")
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
         Button(
             onClick = {
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -218,10 +287,13 @@ private fun FineTuneSlider(
     value: Float,
     onValueChange: (Float) -> Unit,
     onCommit: () -> Unit,
-    onStep: (Float) -> Unit
+    onStep: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..100f,
+    steps: Int = 99,
+    suffix: String = "%"
 ) {
     Text(
-        text = "$title: ${value.toInt()}%",
+        text = "$title: ${value.toInt()}$suffix",
         style = MaterialTheme.typography.bodyMedium
     )
     Row(
@@ -232,11 +304,11 @@ private fun FineTuneSlider(
             Text("−", style = MaterialTheme.typography.titleLarge)
         }
         Slider(
-            value = value,
+            value = value.coerceIn(valueRange.start, valueRange.endInclusive),
             onValueChange = onValueChange,
             onValueChangeFinished = onCommit,
-            valueRange = 0f..100f,
-            steps = 99,
+            valueRange = valueRange,
+            steps = steps,
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = 8.dp)

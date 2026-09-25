@@ -119,6 +119,9 @@ public class MoreBubbleHookModule extends XposedModule {
     private void hookSystemUi(ClassLoader cl) {
         log(Log.INFO, TAG, "Hooking SystemUI...");
 
+        // Android 17 App Bubble 窗口大小
+        hookAndroid17BubbleBounds(cl);
+
         // 诊断：dump BubbleController 结构
         dumpBubbleControllerStructure(cl);
 
@@ -292,6 +295,80 @@ public class MoreBubbleHookModule extends XposedModule {
         // 不再添加强制修改 mBubbles 的逻辑，避免干扰诊断
 
         log(Log.INFO, TAG, "All SystemUI hooks installed");
+    }
+
+    // ==================== Android 17 App Bubble 尺寸 ====================
+    private void hookAndroid17BubbleBounds(ClassLoader cl) {
+        try {
+            Class<?> positioner = cl.loadClass("com.android.wm.shell.bubbles.BubblePositioner");
+            Method bounds = positioner.getDeclaredMethod("getTaskViewRestBounds",
+                    android.graphics.Rect.class);
+            hook(bounds).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    Object targetRect = chain.getArg(0);
+                    if (!(targetRect instanceof android.graphics.Rect)) return result;
+                    Context ctx = (Context) getFieldSystemUi(chain.getThisObject(), "mContext");
+                    if (ctx == null) return result;
+                    int widthPercent = ModuleSettings.getBubbleWidthPercent(ctx);
+                    int heightPercent = ModuleSettings.getBubbleHeightPercent(ctx);
+                    if (widthPercent == 100 && heightPercent == 100) return result;
+
+                    android.graphics.Rect rect = (android.graphics.Rect) targetRect;
+                    int oldWidth = rect.width();
+                    int oldHeight = rect.height();
+                    if (oldWidth <= 0 || oldHeight <= 0) return result;
+                    boolean showingInBar = Boolean.TRUE.equals(
+                            getFieldSystemUi(chain.getThisObject(), "mShowingInBubbleBar"));
+                    android.graphics.Rect screen = (android.graphics.Rect)
+                            getFieldSystemUi(chain.getThisObject(), "mScreenRect");
+                    android.graphics.Rect position = (android.graphics.Rect)
+                            getFieldSystemUi(chain.getThisObject(), "mPositionRect");
+                    int padding = getIntFieldSystemUi(chain.getThisObject(), "mExpandedViewPadding", 0);
+                    int minWidth = getIntFieldSystemUi(chain.getThisObject(), "mPointerWidth", 1) + padding * 2;
+                    int minHeight = showingInBar
+                            ? getIntFieldSystemUi(chain.getThisObject(), "mManageButtonHeight", 1)
+                                + getIntFieldSystemUi(chain.getThisObject(), "mPointerWidth", 1) + padding * 2
+                            : getIntFieldSystemUi(chain.getThisObject(), "mManageButtonHeightIncludingMargins", 1);
+                    int maxWidth = screen != null ? Math.max(minWidth, screen.width() - padding * 2) : oldWidth;
+                    int maxHeight = screen != null ? Math.max(minHeight, screen.height() - padding * 2) : oldHeight;
+                    int width = Math.max(minWidth, Math.min(maxWidth, oldWidth * widthPercent / 100));
+                    int height = Math.max(minHeight, Math.min(maxHeight, oldHeight * heightPercent / 100));
+                    if (!showingInBar) {
+                        android.graphics.Rect screenRect = (android.graphics.Rect)
+                                getFieldSystemUi(chain.getThisObject(), "mScreenRect");
+                        int left = rect.left - (width - oldWidth) / 2;
+                        int top = rect.top - (height - oldHeight) / 2;
+                        if (screenRect != null) {
+                            left = Math.max(screenRect.left, Math.min(left, screenRect.right - width));
+                            top = Math.max(screenRect.top, Math.min(top, screenRect.bottom - height));
+                        }
+                        rect.set(left, top, left + width, top + height);
+                        return result;
+                    }
+                    boolean onLeft = position != null && rect.centerX() < position.centerX();
+                    int left;
+                    if (position != null) {
+                        left = onLeft ? position.left + padding : position.right - width - padding;
+                    } else {
+                        left = rect.left - (width - oldWidth) / 2;
+                    }
+                    int top = rect.bottom - height;
+                    rect.set(left, top, left + width, top + height);
+                } catch (Throwable t) {
+                    log(Log.WARN, TAG, "Android 17 bubble size adjustment skipped: " + t.getMessage());
+                }
+                return result;
+            });
+            log(Log.INFO, TAG, "Hooked Android 17 BubblePositioner bounds");
+        } catch (Throwable t) {
+            logThrowable("hook Android 17 bubble bounds", t);
+        }
+    }
+
+    private static int getIntFieldSystemUi(Object obj, String name, int fallback) {
+        Object value = getFieldSystemUi(obj, name);
+        return value instanceof Integer ? (Integer) value : fallback;
     }
 
     // ==================== 诊断工具：dump BubbleController 结构 ====================
