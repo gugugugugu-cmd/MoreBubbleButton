@@ -298,77 +298,124 @@ public class MoreBubbleHookModule extends XposedModule {
     }
 
     // ==================== Android 17 App Bubble 尺寸 ====================
+    // 气泡浮窗由「容器视图」和「任务窗口」两部分组成：
+    //   * 容器视图（BubbleExpandedView / BubbleBarExpandedView）负责圆角轮廓、阴影、把手；
+    //   * 任务窗口（承载 app 内容）的 bounds 由 BubblePositioner.getTaskViewRestBounds() 计算，
+    //     而它在气泡栏模式下会直接复用 getBubbleBarExpandedViewBounds() 的结果。
+    // 这两部分各自从下面的尺寸源头取值。只改 getTaskViewRestBounds() 会出现
+    // 「内容变小、轮廓不变」的空白区域，而且拖动贴边后容器重新布局会把内容尺寸改回原值。
+    // 因此这里统一在尺寸源头缩放，保证轮廓与内容始终一致。
+    private static volatile int sLoggedWidthPercent = -1;
+    private static volatile int sLoggedHeightPercent = -1;
+
     private void hookAndroid17BubbleBounds(ClassLoader cl) {
         try {
             Class<?> positioner = cl.loadClass("com.android.wm.shell.bubbles.BubblePositioner");
-            Method bounds = positioner.getDeclaredMethod("getTaskViewRestBounds",
-                    android.graphics.Rect.class);
-            hook(bounds).intercept(chain -> {
+
+            // 旧式浮窗宽度：容器宽度与任务窗口宽度共用
+            Method contentWidth = positioner.getDeclaredMethod("getTaskViewContentWidth", boolean.class);
+            hook(contentWidth).intercept(chain -> {
+                int original = (int) chain.proceed();
+                return scaleBubbleLength(chain.getThisObject(), original, true, "contentWidth");
+            });
+
+            // 旧式浮窗高度上限：容器高度上限与任务窗口高度共用
+            Method maxHeight = positioner.getDeclaredMethod("getMaxExpandedViewHeight", boolean.class);
+            hook(maxHeight).intercept(chain -> {
+                int original = (int) chain.proceed();
+                return scaleBubbleLength(chain.getThisObject(), original, false, "maxHeight");
+            });
+
+            // 旧式浮窗资源高度：影响容器高度与 Y 轴定位
+            Class<?> viewProvider = cl.loadClass("com.android.wm.shell.bubbles.BubbleViewProvider");
+            Method expandedHeight = positioner.getDeclaredMethod("getExpandedViewHeight", viewProvider);
+            hook(expandedHeight).intercept(chain -> {
+                float original = (float) chain.proceed();
+                int percent = bubbleSizePercent(chain.getThisObject(), false);
+                if (percent == 100 || original <= 0f) return original;
+                return original * percent / 100f;
+            });
+
+            // 气泡栏模式：容器与任务窗口共用同一个 Rect，按栏侧 + 底边锚点缩放
+            Method barBounds = positioner.getDeclaredMethod("getBubbleBarExpandedViewBounds",
+                    boolean.class, boolean.class, android.graphics.Rect.class);
+            hook(barBounds).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
-                    Object targetRect = chain.getArg(0);
-                    if (!(targetRect instanceof android.graphics.Rect)) return result;
-                    Context ctx = (Context) getFieldSystemUi(chain.getThisObject(), "mContext");
-                    if (ctx == null) return result;
-                    int widthPercent = ModuleSettings.getBubbleWidthPercent(ctx);
-                    int heightPercent = ModuleSettings.getBubbleHeightPercent(ctx);
+                    Object target = chain.getArg(2);
+                    if (!(target instanceof android.graphics.Rect)) return result;
+                    Object positionerObj = chain.getThisObject();
+                    int widthPercent = bubbleSizePercent(positionerObj, true);
+                    int heightPercent = bubbleSizePercent(positionerObj, false);
                     if (widthPercent == 100 && heightPercent == 100) return result;
 
-                    android.graphics.Rect rect = (android.graphics.Rect) targetRect;
+                    android.graphics.Rect rect = (android.graphics.Rect) target;
                     int oldWidth = rect.width();
                     int oldHeight = rect.height();
                     if (oldWidth <= 0 || oldHeight <= 0) return result;
-                    boolean showingInBar = Boolean.TRUE.equals(
-                            getFieldSystemUi(chain.getThisObject(), "mShowingInBubbleBar"));
-                    android.graphics.Rect screen = (android.graphics.Rect)
-                            getFieldSystemUi(chain.getThisObject(), "mScreenRect");
-                    android.graphics.Rect position = (android.graphics.Rect)
-                            getFieldSystemUi(chain.getThisObject(), "mPositionRect");
-                    int padding = getIntFieldSystemUi(chain.getThisObject(), "mExpandedViewPadding", 0);
-                    int minWidth = getIntFieldSystemUi(chain.getThisObject(), "mPointerWidth", 1) + padding * 2;
-                    int minHeight = showingInBar
-                            ? getIntFieldSystemUi(chain.getThisObject(), "mManageButtonHeight", 1)
-                                + getIntFieldSystemUi(chain.getThisObject(), "mPointerWidth", 1) + padding * 2
-                            : getIntFieldSystemUi(chain.getThisObject(), "mManageButtonHeightIncludingMargins", 1);
-                    int maxWidth = screen != null ? Math.max(minWidth, screen.width() - padding * 2) : oldWidth;
-                    int maxHeight = screen != null ? Math.max(minHeight, screen.height() - padding * 2) : oldHeight;
-                    int width = Math.max(minWidth, Math.min(maxWidth, oldWidth * widthPercent / 100));
-                    int height = Math.max(minHeight, Math.min(maxHeight, oldHeight * heightPercent / 100));
-                    if (!showingInBar) {
-                        android.graphics.Rect screenRect = (android.graphics.Rect)
-                                getFieldSystemUi(chain.getThisObject(), "mScreenRect");
-                        int left = rect.left - (width - oldWidth) / 2;
-                        int top = rect.top - (height - oldHeight) / 2;
-                        if (screenRect != null) {
-                            left = Math.max(screenRect.left, Math.min(left, screenRect.right - width));
-                            top = Math.max(screenRect.top, Math.min(top, screenRect.bottom - height));
-                        }
-                        rect.set(left, top, left + width, top + height);
-                        return result;
-                    }
-                    boolean onLeft = position != null && rect.centerX() < position.centerX();
-                    int left;
-                    if (position != null) {
-                        left = onLeft ? position.left + padding : position.right - width - padding;
-                    } else {
-                        left = rect.left - (width - oldWidth) / 2;
-                    }
-                    int top = rect.bottom - height;
-                    rect.set(left, top, left + width, top + height);
+                    int width = clampBubbleLength(positionerObj,
+                            (int) ((long) oldWidth * widthPercent / 100L), true);
+                    int height = clampBubbleLength(positionerObj,
+                            (int) ((long) oldHeight * heightPercent / 100L), false);
+                    boolean onLeft = Boolean.TRUE.equals(chain.getArg(0));
+                    int left = onLeft ? rect.left : rect.right - width;
+                    int bottom = rect.bottom;
+                    rect.set(left, bottom - height, left + width, bottom);
+                    logBubbleSize("barBounds", true, widthPercent, oldWidth, width);
+                    logBubbleSize("barBounds", false, heightPercent, oldHeight, height);
                 } catch (Throwable t) {
-                    log(Log.WARN, TAG, "Android 17 bubble size adjustment skipped: " + t.getMessage());
+                    log(Log.WARN, TAG, "Android 17 bubble bar size skipped: " + t.getMessage());
                 }
                 return result;
             });
-            log(Log.INFO, TAG, "Hooked Android 17 BubblePositioner bounds");
+
+            log(Log.INFO, TAG, "Hooked Android 17 BubblePositioner size sources");
         } catch (Throwable t) {
-            logThrowable("hook Android 17 bubble bounds", t);
+            logThrowable("hook Android 17 bubble size sources", t);
         }
     }
 
-    private static int getIntFieldSystemUi(Object obj, String name, int fallback) {
-        Object value = getFieldSystemUi(obj, name);
-        return value instanceof Integer ? (Integer) value : fallback;
+    /** 按设置百分比缩放一个长度值；100% 时原样返回。 */
+    private static int scaleBubbleLength(Object positionerObj, int original, boolean width, String tag) {
+        if (original <= 0) return original;
+        int percent = bubbleSizePercent(positionerObj, width);
+        if (percent == 100) return original;
+        int scaled = clampBubbleLength(positionerObj, (int) ((long) original * percent / 100L), width);
+        logBubbleSize(tag, width, percent, original, scaled);
+        return scaled;
+    }
+
+    /** 缩放结果必须落在屏幕范围内。 */
+    private static int clampBubbleLength(Object positionerObj, int value, boolean width) {
+        android.graphics.Rect screen = (android.graphics.Rect)
+                getFieldSystemUi(positionerObj, "mScreenRect");
+        long limit = width
+                ? (screen != null ? screen.width() : value)
+                : (screen != null ? screen.height() : value);
+        return (int) Math.max(1L, Math.min(limit, value));
+    }
+
+    /** 读取用户在模块设置里配置的百分比，取不到时按系统默认 100%。 */
+    private static int bubbleSizePercent(Object positionerObj, boolean width) {
+        Context ctx = (Context) getFieldSystemUi(positionerObj, "mContext");
+        if (ctx == null) return 100;
+        return width
+                ? ModuleSettings.getBubbleWidthPercent(ctx)
+                : ModuleSettings.getBubbleHeightPercent(ctx);
+    }
+
+    /** 同一方向的百分比变化时才打印一次，避免布局回调刷屏。 */
+    private static void logBubbleSize(String tag, boolean width, int percent, int before, int after) {
+        if (width ? sLoggedWidthPercent == percent : sLoggedHeightPercent == percent) return;
+        if (width) {
+            sLoggedWidthPercent = percent;
+        } else {
+            sLoggedHeightPercent = percent;
+        }
+        Log.i(TAG, "MBDBG bubble size apply source=" + tag
+                + " axis=" + (width ? "width" : "height")
+                + " percent=" + percent
+                + " " + before + " -> " + after);
     }
 
     // ==================== 诊断工具：dump BubbleController 结构 ====================

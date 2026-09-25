@@ -88,6 +88,25 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 | `BubblesManager.onUserChangedBubble` / `expandStackAndSelectBubble` | 拦截通知气泡点击，改走稳定的 app bubble 路径 |
 | `BubbleController.expandStackAndSelectBubble(Intent, UserHandle, EntryPoint, null)` | 使用通知 `contentIntent` 创建并展开 app bubble |
 | `BubbleCoordinator.removeNotification` | 在气泡成功展开后移除 auto-cancel 通知 |
+| `BubblePositioner` 尺寸源头（Android 17 气泡小窗大小） | 统一缩放气泡浮窗的宽度与高度，见下 |
+
+### Android 17 气泡小窗大小
+
+气泡浮窗由两部分组成，尺寸来源不同：
+
+- **容器视图**：`BubbleExpandedView`（浮动气泡）/ `BubbleBarExpandedView`（气泡栏），负责圆角轮廓、阴影、把手；
+- **任务窗口**：承载 app 内容，bounds 由 `BubblePositioner.getTaskViewRestBounds()` 计算，气泡栏模式下它直接复用 `getBubbleBarExpandedViewBounds()` 的结果。
+
+如果只修改 `getTaskViewRestBounds()`，会出现「内容变小、轮廓不变」的空白区域，拖动贴边时容器重新布局还会把内容尺寸改回原值。因此模块改为在两者共同的尺寸源头缩放：
+
+| Hook 目标 | 作用 |
+|-----------|------|
+| `BubblePositioner.getTaskViewContentWidth(boolean)` | 浮动气泡宽度（容器宽度 + 任务窗口宽度） |
+| `BubblePositioner.getMaxExpandedViewHeight(boolean)` | 浮动气泡高度上限（容器高度上限 + 任务窗口高度） |
+| `BubblePositioner.getExpandedViewHeight(BubbleViewProvider)` | 浮动气泡资源高度与 Y 轴定位 |
+| `BubblePositioner.getBubbleBarExpandedViewBounds(boolean, boolean, Rect)` | 气泡栏模式下容器与任务窗口共用的 Rect，按栏侧 + 底边锚点缩放 |
+
+缩放结果会限制在屏幕范围内；调整为 100% 时不生效。百分比变化时模块会输出一行 `MBDBG bubble size apply` 日志用于核对。
 
 ## 构建
 
