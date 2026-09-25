@@ -104,9 +104,14 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 | `BubblePositioner.getTaskViewContentWidth(boolean)` | 浮动气泡宽度（容器宽度 + 任务窗口宽度） |
 | `BubblePositioner.getMaxExpandedViewHeight(boolean)` | 浮动气泡高度上限（容器高度上限 + 任务窗口高度） |
 | `BubblePositioner.getExpandedViewHeight(BubbleViewProvider)` | 浮动气泡资源高度与 Y 轴定位 |
-| `BubblePositioner.getBubbleBarExpandedViewBounds(boolean, boolean, Rect)` | 气泡栏模式下容器与任务窗口共用的 Rect，按栏侧 + 底边锚点缩放 |
+| `BubblePositioner.getExpandedViewContainerPadding(boolean, boolean)` | 浮动气泡水平居中：把缩小后的余量一半补到左侧内边距 |
+| `BubblePositioner.getBubbleBarExpandedViewBounds(boolean, boolean, Rect)` | 气泡栏模式下容器与任务窗口共用的 Rect，按底边锚点缩放并水平居中 |
 
-缩放结果会限制在屏幕范围内；调整为 100% 时不生效。百分比变化时模块会输出一行 `MBDBG bubble size apply` 日志用于核对。
+缩放结果会限制在屏幕范围内；调整为 100% 时不生效。窗口高度保持底部锚点（贴着气泡栏/气泡堆），宽度缩小后会自动水平居中，不会贴边。
+
+> `getTaskViewContentWidth()` 内部会减去容器左内边距，而居中逻辑刚好加宽了它，因此宽度换算时需要把该偏移补回，否则实际比例会小于设置值。
+
+百分比变化时模块会输出 `MBDBG bubble size apply` 日志（含 `source`、`percent`、`before -> after`）用于核对。
 
 ## 构建
 
