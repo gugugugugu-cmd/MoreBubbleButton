@@ -417,6 +417,56 @@ public class MoreBubbleHookModule extends XposedModule {
                 return Math.max(1, Math.round(original / scale));
             });
 
+            // 内容缩放（二）：任务窗口的 bounds 会被系统按「缩放后的可见尺寸」重算，
+            // app 于是仍按窗口大小排版，表现为「窗口框比画面大一圈」。
+            // 这里在设置任务边界时把它改回放大后的排版尺寸，让 app 真正按更大的屏幕排版。
+            Class<?> taskViewControllerCls = cl.loadClass(
+                    "com.android.wm.shell.bubbles.BubbleController$BubbleTaskViewController");
+            Class<?> taskViewTaskControllerCls = cl.loadClass(
+                    "com.android.wm.shell.taskview.TaskViewTaskController");
+            Method setTaskBounds = taskViewControllerCls.getDeclaredMethod("setTaskBounds",
+                    taskViewTaskControllerCls, android.graphics.Rect.class);
+            hook(setTaskBounds).intercept(chain -> {
+                try {
+                    Object boundsArg = chain.getArg(1);
+                    if (!(boundsArg instanceof android.graphics.Rect)) return chain.proceed();
+                    Object viewController = chain.getThisObject();
+                    Object bubbleController = getFieldSystemUi(viewController, "this$0");
+                    Context scaleCtx = (Context) getFieldSystemUi(bubbleController, "mContext");
+                    float scale = contentScaleFactorForContext(scaleCtx);
+                    if (scale >= 1f) return chain.proceed();
+
+                    android.graphics.Rect bounds = (android.graphics.Rect) boundsArg;
+                    int width = bounds.width();
+                    int height = bounds.height();
+                    if (width <= 0 || height <= 0) return chain.proceed();
+                    // 已经是排版尺寸时不再放大，避免重复换算。
+                    Object taskView = invokeSystemUi(chain.getArg(0), "getTaskView");
+                    if (taskView instanceof View) {
+                        View taskViewView = (View) taskView;
+                        if (taskViewView.getWidth() > 0
+                                && Math.abs(taskViewView.getWidth() - width) <= 2) {
+                            return chain.proceed();
+                        }
+                    }
+                    int targetWidth = Math.round(width / scale);
+                    int targetHeight = Math.round(height / scale);
+                    android.graphics.Rect inflated = new android.graphics.Rect(
+                            bounds.left, bounds.top, bounds.left + targetWidth, bounds.top + targetHeight);
+                    Object baseTransitions = getFieldSystemUi(viewController, "mBaseTransitions");
+                    Method delegate = baseTransitions == null ? null
+                            : findMethodSystemUi(baseTransitions.getClass(), "setTaskBounds",
+                                    taskViewTaskControllerCls, android.graphics.Rect.class);
+                    if (delegate == null) return chain.proceed();
+                    logBubbleContentBounds(bounds, inflated);
+                    delegate.invoke(baseTransitions, chain.getArg(0), inflated);
+                    return null;
+                } catch (Throwable t) {
+                    log(Log.WARN, TAG, "bubble content bounds skipped: " + t.getMessage());
+                    return chain.proceed();
+                }
+            });
+
             // 指针实测校准（一）：指针更新时记住图标左边界，并在布局后实测指针位置对齐。
             Method setPointer = expandedViewCls.getDeclaredMethod("setPointerPosition",
                     float.class, boolean.class, boolean.class);
@@ -653,12 +703,28 @@ public class MoreBubbleHookModule extends XposedModule {
             if (ctx == null && expandedView instanceof View) {
                 ctx = ((View) expandedView).getContext();
             }
+            return contentScaleFactorForContext(ctx);
+        } catch (Throwable t) {
+            return 1f;
+        }
+    }
+
+    /** 内容缩放倍数；1.0 表示未开启（读取模块设置）。 */
+    private static float contentScaleFactorForContext(Context ctx) {
+        try {
             if (ctx == null) return 1f;
             int percent = ModuleSettings.getContentScalePercent(ctx);
             return percent >= 100 ? 1f : percent / 100f;
         } catch (Throwable t) {
             return 1f;
         }
+    }
+
+    /** 任务边界换算只在尺寸变化时打印一次。 */
+    private static void logBubbleContentBounds(android.graphics.Rect before, android.graphics.Rect after) {
+        if (before.width() == after.width() && before.height() == after.height()) return;
+        Log.i(TAG, "MBDBG bubble content taskBounds=" + before.width() + "x" + before.height()
+                + " -> " + after.width() + "x" + after.height());
     }
 
     /** 内容缩放要在布局稳定后应用，否则拿到的是旧的内容区尺寸。 */
