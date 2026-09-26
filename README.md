@@ -64,6 +64,7 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 | Y 轴 | 垂直位置，支持滑杆和 `+` / `−` 精调 | 50% |
 | 气泡宽度 | Android 17 应用气泡窗口宽度比例（50%–150%） | 100% |
 | 气泡高度 | Android 17 应用气泡窗口高度比例（50%–150%） | 100% |
+| 内容缩放 | 把气泡里 app 的画面整体缩小（50%–100%，100% 为关闭） | 100% |
 | 重启启动器 + 系统界面 | 通过 root 重启 Pixel Launcher / SystemUI 使设置生效 | - |
 
 ## 技术实现
@@ -115,6 +116,22 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 > `getTaskViewContentWidth()` 内部会减去容器左内边距，而居中逻辑刚好加宽了它，因此宽度换算时需要把该偏移补回，否则实际比例会小于设置值。
 
 百分比变化时模块会输出 `MBDBG bubble size apply` 日志（含 `source`、`axis`、`percent`、`before -> after`）；同时每个尺寸源头在每个进程里会输出一次 `MBDBG bubble size probe` 日志，用来确认设备实际走的是浮动气泡还是气泡栏布局，以及模块读到的百分比。
+
+### 内容缩放（把 app 画面整体缩小）
+
+气泡窗口是**真实窗口**：窗口变小后 app 只是重新排版去适配，文字与控件的物理尺寸由显示密度决定，所以「窗口小了」并不等于「内容小了」。
+
+平台没有向 SystemUI 暴露按任务改密度的接口（`ActivityOptions` 只有 `setLaunchBounds` / `setLaunchDisplayId`，没有密度或 display configuration 覆盖），因此模块改用**表面缩放**达到同样的观感：
+
+| Hook 目标 | 作用 |
+|-----------|------|
+| `BubbleExpandedView.getContentWidth()` | 把 app 的排版尺寸放大到「窗口内容区 ÷ scale」 |
+| `BubbleExpandedView.mTaskView`（布局后处理） | 用 scale 把画面等比缩小、关掉 Surface 裁剪，画面正好铺满窗口 |
+
+效果等同于给该窗口更高的显示密度：app 认为自己有更大的屏幕，文字与控件一起变小；窗口本身（轮廓、指针、居中）不受影响。
+
+已知限制：这是画面级缩放而非真正的 density 改变，输入法与部分自绘 app 可能不完全贴合。若出现「窗口框比 app 画面大一圈」，对照日志 `MBDBG bubble content scale percent=… window=…x… surface=…x…` 即可看出内容区与排版尺寸的关系。
+
 
 ## 构建
 

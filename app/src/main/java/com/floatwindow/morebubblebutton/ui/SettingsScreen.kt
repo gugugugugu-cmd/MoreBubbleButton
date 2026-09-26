@@ -27,6 +27,7 @@ fun SettingsScreen() {
     var sliderY by remember { mutableFloatStateOf(ModuleSettings.getPosY(ctx).toFloat()) }
     var bubbleWidth by remember { mutableFloatStateOf(ModuleSettings.getBubbleWidthPercent(ctx).toFloat()) }
     var bubbleHeight by remember { mutableFloatStateOf(ModuleSettings.getBubbleHeightPercent(ctx).toFloat()) }
+    var contentScale by remember { mutableFloatStateOf(ModuleSettings.getContentScalePercent(ctx).toFloat()) }
 
     Column(
         modifier = Modifier
@@ -242,12 +243,35 @@ fun SettingsScreen() {
                     suffix = "%"
                 )
                 Spacer(modifier = Modifier.height(8.dp))
+                FineTuneSlider(
+                    title = "内容缩放",
+                    value = contentScale,
+                    onValueChange = { contentScale = it },
+                    onCommit = {
+                        ModuleSettings.setContentScalePercent(ctx, contentScale.toInt())
+                    },
+                    onStep = { delta ->
+                        contentScale = (contentScale + delta).coerceIn(50f, 100f)
+                        ModuleSettings.setContentScalePercent(ctx, contentScale.toInt())
+                    },
+                    valueRange = 50f..100f,
+                    steps = 49,
+                    suffix = "%"
+                )
+                Text(
+                    text = "把气泡里 app 的画面整体缩小（100% = 关闭）。文字与控件会一起变小，相当于给该窗口更高的显示密度。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(8.dp))
                 OutlinedButton(
                     onClick = {
                         bubbleWidth = 100f
                         bubbleHeight = 100f
+                        contentScale = 100f
                         ModuleSettings.setBubbleWidthPercent(ctx, 100)
                         ModuleSettings.setBubbleHeightPercent(ctx, 100)
+                        ModuleSettings.setContentScalePercent(ctx, 100)
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {

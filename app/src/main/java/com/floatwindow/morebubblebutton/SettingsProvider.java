@@ -29,6 +29,7 @@ public class SettingsProvider extends ContentProvider {
         add(cursor, ModuleSettings.KEY_SYSTEMUI_BUBBLE_ENABLED, prefs.getBoolean(ModuleSettings.KEY_SYSTEMUI_BUBBLE_ENABLED, true));
         add(cursor, ModuleSettings.KEY_BUBBLE_WIDTH_PERCENT, prefs.getInt(ModuleSettings.KEY_BUBBLE_WIDTH_PERCENT, 100));
         add(cursor, ModuleSettings.KEY_BUBBLE_HEIGHT_PERCENT, prefs.getInt(ModuleSettings.KEY_BUBBLE_HEIGHT_PERCENT, 100));
+        add(cursor, ModuleSettings.KEY_CONTENT_SCALE_PERCENT, prefs.getInt(ModuleSettings.KEY_CONTENT_SCALE_PERCENT, 100));
         return cursor;
     }
 

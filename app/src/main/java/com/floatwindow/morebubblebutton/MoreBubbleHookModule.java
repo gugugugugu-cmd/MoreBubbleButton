@@ -310,6 +310,10 @@ public class MoreBubbleHookModule extends XposedModule {
     private static volatile View sAlignTargetView;
     private static volatile float sAlignIconLeft;
     private static volatile long sAlignLoggedAt;
+    private static volatile View sContentScaleTaskView;
+    private static volatile int sContentScalePercent = 100;
+    private static volatile int sContentScaleWidth;
+    private static volatile int sContentScaleHeight;
     private static final java.util.Set<String> sProbedSources =
             java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
@@ -402,6 +406,16 @@ public class MoreBubbleHookModule extends XposedModule {
                 return adjusted;
             });
 
+            // 内容缩放（一）：气泡里 app 的排版尺寸按 1/scale 放大，画面再按 scale 缩回窗口，
+            // 等于给这个窗口更高的显示密度，文字与控件会一起变小而不是只被裁掉。
+            Method viewContentWidth = expandedViewCls.getDeclaredMethod("getContentWidth");
+            hook(viewContentWidth).intercept(chain -> {
+                int original = (int) chain.proceed();
+                float scale = contentScaleFactor(chain.getThisObject());
+                if (scale >= 1f || original <= 0) return original;
+                return Math.max(1, Math.round(original / scale));
+            });
+
             // 指针实测校准（一）：指针更新时记住图标左边界，并在布局后实测指针位置对齐。
             Class<?> expandedViewCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleExpandedView");
             Method setPointer = expandedViewCls.getDeclaredMethod("setPointerPosition",
@@ -431,6 +445,9 @@ public class MoreBubbleHookModule extends XposedModule {
                 Object result = chain.proceed();
                 try {
                     Object viewObj = invokeSystemUi(chain.getThisObject(), "getExpandedView");
+                    if (viewObj instanceof View) {
+                        postBubbleContentScale((View) viewObj);
+                    }
                     if (viewObj instanceof View && sAlignTargetView == viewObj
                             && isCenteredBubbleLayout(viewObj)) {
                         alignPointerToIcon((View) viewObj, sAlignIconLeft, 0);
@@ -623,6 +640,105 @@ public class MoreBubbleHookModule extends XposedModule {
                 Log.i(TAG, "MBDBG pointer align failed: " + t.getMessage());
             }
         });
+    }
+
+    /** 内容缩放倍数；1.0 表示未开启。 */
+    private static float contentScaleFactor(Object expandedView) {
+        try {
+            Object positioner = getFieldSystemUi(expandedView, "mPositioner");
+            Context ctx = null;
+            if (positioner != null) {
+                ctx = (Context) getFieldSystemUi(positioner, "mContext");
+            }
+            if (ctx == null && expandedView instanceof View) {
+                ctx = ((View) expandedView).getContext();
+            }
+            if (ctx == null) return 1f;
+            int percent = ModuleSettings.getContentScalePercent(ctx);
+            return percent >= 100 ? 1f : percent / 100f;
+        } catch (Throwable t) {
+            return 1f;
+        }
+    }
+
+    /** 内容缩放要在布局稳定后应用，否则拿到的是旧的内容区尺寸。 */
+    private static void postBubbleContentScale(View expandedView) {
+        expandedView.postOnAnimation(() -> applyBubbleContentScale(expandedView));
+    }
+
+    /**
+     * 内容缩放：任务视图按「窗口内容区 / scale」排版，再整体缩小 scale 显示。
+     * app 因此认为自己有一块更大的屏幕，文字与控件随之变小，画面仍然铺满窗口。
+     * 窗口本身（轮廓、指针、居中）不受影响。
+     */
+    private static void applyBubbleContentScale(View expandedView) {
+        try {
+            Object taskObj = getFieldSystemUi(expandedView, "mTaskView");
+            if (!(taskObj instanceof View)) return;
+            View taskView = (View) taskObj;
+            float scale = contentScaleFactor(expandedView);
+
+            if (scale >= 1f) {
+                if (sContentScaleTaskView != taskView) return;
+                taskView.setScaleX(1f);
+                taskView.setScaleY(1f);
+                ViewGroup.LayoutParams params = taskView.getLayoutParams();
+                if (params != null && params.height != ViewGroup.LayoutParams.MATCH_PARENT) {
+                    params.height = ViewGroup.LayoutParams.MATCH_PARENT;
+                    taskView.setLayoutParams(params);
+                }
+                sContentScaleTaskView = null;
+                sContentScalePercent = 100;
+                Log.i(TAG, "MBDBG bubble content scale off");
+                return;
+            }
+
+            int contentWidth = expandedView.getWidth() - expandedView.getPaddingLeft()
+                    - expandedView.getPaddingRight();
+            int contentHeight = expandedView.getHeight() - expandedView.getPaddingTop()
+                    - expandedView.getPaddingBottom();
+            if (contentWidth <= 0 || contentHeight <= 0) return;
+
+            int surfaceWidth = Math.round(contentWidth / scale);
+            int surfaceHeight = Math.round(contentHeight / scale);
+            int percent = Math.round(scale * 100f);
+            if (sContentScaleTaskView == taskView && sContentScalePercent == percent
+                    && sContentScaleWidth == surfaceWidth && sContentScaleHeight == surfaceHeight) {
+                return;
+            }
+            sContentScaleTaskView = taskView;
+            sContentScalePercent = percent;
+            sContentScaleWidth = surfaceWidth;
+            sContentScaleHeight = surfaceHeight;
+
+            ViewGroup.LayoutParams params = taskView.getLayoutParams();
+            if (params != null) {
+                params.width = surfaceWidth;
+                params.height = surfaceHeight;
+                taskView.setLayoutParams(params);
+            }
+            taskView.setPivotX(0f);
+            taskView.setPivotY(0f);
+            taskView.setScaleX(scale);
+            taskView.setScaleY(scale);
+            // 画面比窗口大，必须关掉裁剪，否则只会显示左上角一块。
+            expandedView.setClipChildren(false);
+            expandedView.setClipToPadding(false);
+            if (expandedView.getParent() instanceof ViewGroup) {
+                ((ViewGroup) expandedView.getParent()).setClipChildren(false);
+            }
+            setFieldSystemUi(expandedView, "mIsClipping", false);
+            if (taskView instanceof android.view.SurfaceView) {
+                try {
+                    ((android.view.SurfaceView) taskView).setEnableSurfaceClipping(false);
+                } catch (Throwable ignored) {}
+            }
+            Log.i(TAG, "MBDBG bubble content scale percent=" + percent
+                    + " window=" + contentWidth + "x" + contentHeight
+                    + " surface=" + surfaceWidth + "x" + surfaceHeight);
+        } catch (Throwable t) {
+            Log.i(TAG, "MBDBG bubble content scale failed: " + t.getMessage());
+        }
     }
 
     /** 每个尺寸源头 × 每套百分比只打印一次，用来确认设备走哪套布局、模块读到什么配置。 */
@@ -2351,6 +2467,16 @@ public class MoreBubbleHookModule extends XposedModule {
             try { return c.getDeclaredField(n); } catch (NoSuchFieldException e) { c = c.getSuperclass(); }
         }
         return null;
+    }
+
+    private static void setFieldSystemUi(Object obj, String name, Object value) {
+        if (obj == null) return;
+        try {
+            Field field = findFieldSystemUi(obj.getClass(), name);
+            if (field == null) return;
+            field.setAccessible(true);
+            field.set(obj, value);
+        } catch (Throwable ignored) {}
     }
 
     private static Method findMethodSystemUi(Class<?> c, String n, Class<?>... p) {

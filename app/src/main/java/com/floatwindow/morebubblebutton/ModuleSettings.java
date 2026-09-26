@@ -18,6 +18,7 @@ public class ModuleSettings {
     public static final String KEY_SYSTEMUI_BUBBLE_ENABLED = "systemui_bubble_enabled";
     public static final String KEY_BUBBLE_WIDTH_PERCENT = "bubble_width_percent";
     public static final String KEY_BUBBLE_HEIGHT_PERCENT = "bubble_height_percent";
+    public static final String KEY_CONTENT_SCALE_PERCENT = "content_scale_percent";
     private static final Uri SETTINGS_URI = SettingsProvider.CONTENT_URI;
     private static final long REMOTE_CACHE_MS = 250L;
     private static volatile long sRemoteCacheAt;
@@ -156,6 +157,17 @@ public class ModuleSettings {
 
     private static int clampBubblePercent(int v) {
         return Math.max(50, Math.min(150, v));
+    }
+
+    /**
+     * 气泡内 app 内容的缩放百分比，默认 100%（不缩放）。
+     * 小于 100% 时 app 会按更大的尺寸排版，再把画面等比缩小，视觉上等于「内容整体变小」。
+     */
+    public static int getContentScalePercent(Context ctx) {
+        return Math.max(50, Math.min(100, getInt(ctx, KEY_CONTENT_SCALE_PERCENT, 100)));
+    }
+    public static void setContentScalePercent(Context ctx, int v) {
+        getPrefs(ctx).edit().putInt(KEY_CONTENT_SCALE_PERCENT, Math.max(50, Math.min(100, v))).apply();
     }
 
     private static int clampPercent(int v) {
