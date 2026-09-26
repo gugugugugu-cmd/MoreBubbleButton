@@ -502,13 +502,14 @@ public class MoreBubbleHookModule extends XposedModule {
                 : ModuleSettings.getBubbleHeightPercent(ctx);
     }
 
-    /** 每个尺寸源头在每个进程里只打印一次，用来确认设备实际走的是哪套布局。 */
+    /** 每个尺寸源头 × 每套百分比只打印一次，用来确认设备走哪套布局、模块读到什么配置。 */
     private static void bubblesizeProbe(Object positionerObj, String source) {
-        if (sProbedSources.contains(source)) return;
-        if (!sProbedSources.add(source)) return;
+        int widthPercent = bubbleSizePercent(positionerObj, true);
+        int heightPercent = bubbleSizePercent(positionerObj, false);
+        if (!sProbedSources.add(source + ":" + widthPercent + "/" + heightPercent)) return;
         Log.i(TAG, "MBDBG bubble size probe source=" + source
-                + " widthPercent=" + bubbleSizePercent(positionerObj, true)
-                + " heightPercent=" + bubbleSizePercent(positionerObj, false));
+                + " widthPercent=" + widthPercent
+                + " heightPercent=" + heightPercent);
     }
 
     /** 同一方向的百分比变化时才打印一次，避免布局回调刷屏。 */

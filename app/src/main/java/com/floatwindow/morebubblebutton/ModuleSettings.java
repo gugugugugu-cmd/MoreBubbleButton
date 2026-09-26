@@ -31,6 +31,11 @@ public class ModuleSettings {
         return "com.floatwindow.morebubblebutton".equals(ctx.getApplicationContext().getPackageName());
     }
 
+    private static final java.util.concurrent.atomic.AtomicBoolean sRemoteLoadedLogged =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private static final java.util.concurrent.atomic.AtomicBoolean sRemoteFailureLogged =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
     private static Map<String, String> getRemoteSettings(Context ctx) {
         if (isModuleContext(ctx)) return null;
         long now = android.os.SystemClock.uptimeMillis();
@@ -48,8 +53,20 @@ public class ModuleSettings {
             }
             sRemoteCache = map;
             sRemoteCacheAt = now;
+            if (sRemoteLoadedLogged.compareAndSet(false, true)) {
+                android.util.Log.i("MoreBubbleModule", "MBDBG remote settings loaded process="
+                        + ctx.getApplicationContext().getPackageName()
+                        + " width=" + map.get(KEY_BUBBLE_WIDTH_PERCENT)
+                        + " height=" + map.get(KEY_BUBBLE_HEIGHT_PERCENT));
+            }
             return map;
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            if (sRemoteFailureLogged.compareAndSet(false, true)) {
+                android.util.Log.w("MoreBubbleModule", "MBDBG remote settings query failed process="
+                        + ctx.getApplicationContext().getPackageName()
+                        + " type=" + t.getClass().getName()
+                        + " message=" + t.getMessage());
+            }
             return cached;
         } finally {
             if (cursor != null) cursor.close();
