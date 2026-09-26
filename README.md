@@ -121,16 +121,20 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 
 气泡窗口是**真实窗口**：窗口变小后 app 只是重新排版去适配，文字与控件的物理尺寸由显示密度决定，所以「窗口小了」并不等于「内容小了」。
 
-平台没有向 SystemUI 暴露按任务改密度的接口（`ActivityOptions` 只有 `setLaunchBounds` / `setLaunchDisplayId`，没有密度或 display configuration 覆盖），因此模块改用**表面缩放**达到同样的观感：
+平台没有向 SystemUI 暴露按任务改密度的接口（`ActivityOptions` 只有 `setLaunchBounds` / `setLaunchDisplayId`，没有密度或 display configuration 覆盖），因此模块改用**排版放大 + 画面缩小**达到同样的观感：
 
 | Hook 目标 | 作用 |
 |-----------|------|
-| `BubbleExpandedView.getContentWidth()` | 把 app 的排版尺寸放大到「窗口内容区 ÷ scale」 |
-| `BubbleExpandedView.mTaskView`（布局后处理） | 用 scale 把画面等比缩小、关掉 Surface 裁剪，画面正好铺满窗口 |
+| `BubblePositioner.getTaskViewContentWidth(boolean)` | 宽度：窗口宽度 ÷ scale |
+| `BubblePositioner.getMaxExpandedViewHeight(boolean)` | 高度上限：÷ scale |
+| `BubblePositioner.getExpandedViewHeight(BubbleViewProvider)` | 资源高度：÷ scale |
+| `BubbleExpandedView.mTaskView`（布局后处理） | 把画面按 scale 缩小、关掉 Surface 裁剪，画面正好铺满窗口 |
 
-效果等同于给该窗口更高的显示密度：app 认为自己有更大的屏幕，文字与控件一起变小；窗口本身（轮廓、指针、居中）不受影响。
+关键点：任务窗口的 bounds 由 `BubbleStackView.updateExpandedView()` 用 `（容器位置）+（getContentWidth() × min(getExpandedViewHeight, getMaxExpandedViewHeight)）` 直接算出来，**宽和高必须一起放大**——只放大宽会让 app 的排版框变成「宽够高不够」，缩放后画面比窗口矮一圈（表现为「窗口框比画面大一圈」）。
 
-已知限制：这是画面级缩放而非真正的 density 改变，输入法与部分自绘 app 可能不完全贴合。若出现「窗口框比 app 画面大一圈」，对照日志 `MBDBG bubble content scale percent=… window=…x… surface=…x…` 即可看出内容区与排版尺寸的关系。
+缩放后画面仍铺满窗口，窗口本身（轮廓、指针、居中）尺寸不变；因此等同于给该窗口更高的显示密度，文字与控件一起变小。
+
+限制：内容缩放只作用于**手机竖屏的浮动气泡布局**（横向气泡行，非气泡栏、非侧边竖列），其它布局保持系统默认；另外这是画面级缩放而非真正的 density 改变，输入法与部分自绘 app 可能不完全贴合。
 
 
 ## 构建

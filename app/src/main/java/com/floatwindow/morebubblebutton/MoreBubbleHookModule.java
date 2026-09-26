@@ -312,8 +312,6 @@ public class MoreBubbleHookModule extends XposedModule {
     private static volatile long sAlignLoggedAt;
     private static volatile View sContentScaleTaskView;
     private static volatile int sContentScalePercent = 100;
-    private static volatile int sContentScaleWidth;
-    private static volatile int sContentScaleHeight;
     private static final java.util.Set<String> sProbedSources =
             java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
@@ -331,14 +329,15 @@ public class MoreBubbleHookModule extends XposedModule {
                 Object positionerObj = chain.getThisObject();
                 bubblesizeProbe(positionerObj, "contentWidth");
                 int percent = bubbleSizePercent(positionerObj, true);
-                if (percent == 100 || raw <= 0) return raw;
+                float contentScale = bubbleContentScale(positionerObj);
+                if ((percent == 100 && contentScale >= 1f) || raw <= 0) return raw;
                 // getTaskViewContentWidth() 内部会减掉容器左内边距，而居中逻辑刚好加宽了它，
                 // 这里先把那部分补回来，保证缩放比例与设置一致。
                 boolean onLeft = Boolean.TRUE.equals(chain.getArg(0));
                 int delta = centeringDelta(positionerObj, showVertically, containerPadding, onLeft);
                 int span = raw + delta;
                 int scaled = clampBubbleLength(positionerObj,
-                        (int) Math.round(span * percent / 100.0), true);
+                        (int) Math.round(span * percent / 100.0 / contentScale), true);
                 logBubbleSize("contentWidth", true, percent, span, scaled);
                 return scaled;
             });
@@ -347,8 +346,9 @@ public class MoreBubbleHookModule extends XposedModule {
             Method maxHeight = positioner.getDeclaredMethod("getMaxExpandedViewHeight", boolean.class);
             hook(maxHeight).intercept(chain -> {
                 int original = (int) chain.proceed();
-                bubblesizeProbe(chain.getThisObject(), "maxHeight");
-                return scaleBubbleLength(chain.getThisObject(), original, false, "maxHeight");
+                Object positionerObj = chain.getThisObject();
+                bubblesizeProbe(positionerObj, "maxHeight");
+                return scaleBubbleLength(positionerObj, original, false, "maxHeight");
             });
 
             // 旧式浮窗资源高度：影响容器高度与 Y 轴定位
@@ -359,8 +359,9 @@ public class MoreBubbleHookModule extends XposedModule {
                 Object positionerObj = chain.getThisObject();
                 bubblesizeProbe(positionerObj, "expandedHeight");
                 int percent = bubbleSizePercent(positionerObj, false);
-                if (percent == 100 || original <= 0f) return original;
-                return original * percent / 100f;
+                float contentScale = bubbleContentScale(positionerObj);
+                if ((percent == 100 && contentScale >= 1f) || original <= 0f) return original;
+                return (float) (original * percent / 100.0 / contentScale);
             });
 
             // 旧式浮窗水平居中：展开视图在容器内左对齐，宽度变小后余量全落在一侧会显得贴边，
@@ -406,66 +407,10 @@ public class MoreBubbleHookModule extends XposedModule {
                 return adjusted;
             });
 
-            // 内容缩放（一）：气泡里 app 的排版尺寸按 1/scale 放大，画面再按 scale 缩回窗口，
-            // 等于给这个窗口更高的显示密度，文字与控件会一起变小而不是只被裁掉。
+            // 内容缩放：把 app 的排版尺寸按 1/scale 放大（宽度/高度已在上面三处尺寸源头生效），
+            // 这里只负责把画面按 scale 缩回窗口。放大后 app 会认为自己有更大的屏幕，
+            // 文字与控件随之变小，而窗口本身（轮廓、指针、居中）尺寸不变。
             Class<?> expandedViewCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleExpandedView");
-            Method viewContentWidth = expandedViewCls.getDeclaredMethod("getContentWidth");
-            hook(viewContentWidth).intercept(chain -> {
-                int original = (int) chain.proceed();
-                float scale = contentScaleFactor(chain.getThisObject());
-                if (scale >= 1f || original <= 0) return original;
-                return Math.max(1, Math.round(original / scale));
-            });
-
-            // 内容缩放（二）：任务窗口的 bounds 会被系统按「缩放后的可见尺寸」重算，
-            // app 于是仍按窗口大小排版，表现为「窗口框比画面大一圈」。
-            // 这里在设置任务边界时把它改回放大后的排版尺寸，让 app 真正按更大的屏幕排版。
-            Class<?> taskViewControllerCls = cl.loadClass(
-                    "com.android.wm.shell.bubbles.BubbleController$BubbleTaskViewController");
-            Class<?> taskViewTaskControllerCls = cl.loadClass(
-                    "com.android.wm.shell.taskview.TaskViewTaskController");
-            Method setTaskBounds = taskViewControllerCls.getDeclaredMethod("setTaskBounds",
-                    taskViewTaskControllerCls, android.graphics.Rect.class);
-            hook(setTaskBounds).intercept(chain -> {
-                try {
-                    Object boundsArg = chain.getArg(1);
-                    if (!(boundsArg instanceof android.graphics.Rect)) return chain.proceed();
-                    Object viewController = chain.getThisObject();
-                    Object bubbleController = getFieldSystemUi(viewController, "this$0");
-                    Context scaleCtx = (Context) getFieldSystemUi(bubbleController, "mContext");
-                    float scale = contentScaleFactorForContext(scaleCtx);
-                    if (scale >= 1f) return chain.proceed();
-
-                    android.graphics.Rect bounds = (android.graphics.Rect) boundsArg;
-                    int width = bounds.width();
-                    int height = bounds.height();
-                    if (width <= 0 || height <= 0) return chain.proceed();
-                    // 已经是排版尺寸时不再放大，避免重复换算。
-                    Object taskView = invokeSystemUi(chain.getArg(0), "getTaskView");
-                    if (taskView instanceof View) {
-                        View taskViewView = (View) taskView;
-                        if (taskViewView.getWidth() > 0
-                                && Math.abs(taskViewView.getWidth() - width) <= 2) {
-                            return chain.proceed();
-                        }
-                    }
-                    int targetWidth = Math.round(width / scale);
-                    int targetHeight = Math.round(height / scale);
-                    android.graphics.Rect inflated = new android.graphics.Rect(
-                            bounds.left, bounds.top, bounds.left + targetWidth, bounds.top + targetHeight);
-                    Object baseTransitions = getFieldSystemUi(viewController, "mBaseTransitions");
-                    Method delegate = baseTransitions == null ? null
-                            : findMethodSystemUi(baseTransitions.getClass(), "setTaskBounds",
-                                    taskViewTaskControllerCls, android.graphics.Rect.class);
-                    if (delegate == null) return chain.proceed();
-                    logBubbleContentBounds(bounds, inflated);
-                    delegate.invoke(baseTransitions, chain.getArg(0), inflated);
-                    return null;
-                } catch (Throwable t) {
-                    log(Log.WARN, TAG, "bubble content bounds skipped: " + t.getMessage());
-                    return chain.proceed();
-                }
-            });
 
             // 指针实测校准（一）：指针更新时记住图标左边界，并在布局后实测指针位置对齐。
             Method setPointer = expandedViewCls.getDeclaredMethod("setPointerPosition",
@@ -575,12 +520,14 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    /** 按设置百分比缩放一个长度值；100% 时原样返回。 */
+    /** 按设置百分比缩放一个长度值；100% 且未开内容缩放时原样返回。 */
     private static int scaleBubbleLength(Object positionerObj, int original, boolean width, String tag) {
         if (original <= 0) return original;
         int percent = bubbleSizePercent(positionerObj, width);
-        if (percent == 100) return original;
-        int scaled = clampBubbleLength(positionerObj, (int) ((long) original * percent / 100L), width);
+        float contentScale = bubbleContentScale(positionerObj);
+        if (percent == 100 && contentScale >= 1f) return original;
+        int scaled = clampBubbleLength(positionerObj,
+                (int) Math.round(original * percent / 100.0 / contentScale), width);
         logBubbleSize(tag, width, percent, original, scaled);
         return scaled;
     }
@@ -606,13 +553,17 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    /** 缩放结果必须落在屏幕范围内。 */
+    /** 缩放结果必须落在屏幕范围内；开启内容缩放时允许排版框放大，只要缩放后仍在屏幕内。 */
     private static int clampBubbleLength(Object positionerObj, int value, boolean width) {
         android.graphics.Rect screen = (android.graphics.Rect)
                 getFieldSystemUi(positionerObj, "mScreenRect");
         long limit = width
                 ? (screen != null ? screen.width() : value)
                 : (screen != null ? screen.height() : value);
+        float contentScale = bubbleContentScale(positionerObj);
+        if (contentScale > 1f) {
+            limit = Math.round(limit * contentScale);
+        }
         return (int) Math.max(1L, Math.min(limit, value));
     }
 
@@ -692,26 +643,14 @@ public class MoreBubbleHookModule extends XposedModule {
         });
     }
 
-    /** 内容缩放倍数；1.0 表示未开启。 */
-    private static float contentScaleFactor(Object expandedView) {
+    /** 内容缩放倍数（1.0 = 关闭）；只作用于「横向气泡行」的浮动气泡布局。 */
+    private static float bubbleContentScale(Object positionerObj) {
         try {
-            Object positioner = getFieldSystemUi(expandedView, "mPositioner");
-            Context ctx = null;
-            if (positioner != null) {
-                ctx = (Context) getFieldSystemUi(positioner, "mContext");
-            }
-            if (ctx == null && expandedView instanceof View) {
-                ctx = ((View) expandedView).getContext();
-            }
-            return contentScaleFactorForContext(ctx);
-        } catch (Throwable t) {
-            return 1f;
-        }
-    }
-
-    /** 内容缩放倍数；1.0 表示未开启（读取模块设置）。 */
-    private static float contentScaleFactorForContext(Context ctx) {
-        try {
+            if (positionerObj == null) return 1f;
+            if (Boolean.TRUE.equals(getFieldSystemUi(positionerObj, "mShowingInBubbleBar"))) return 1f;
+            Method showVertically = positionerObj.getClass().getMethod("showBubblesVertically");
+            if (Boolean.TRUE.equals(showVertically.invoke(positionerObj))) return 1f;
+            Context ctx = (Context) getFieldSystemUi(positionerObj, "mContext");
             if (ctx == null) return 1f;
             int percent = ModuleSettings.getContentScalePercent(ctx);
             return percent >= 100 ? 1f : percent / 100f;
@@ -720,74 +659,47 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    /** 任务边界换算只在尺寸变化时打印一次。 */
-    private static void logBubbleContentBounds(android.graphics.Rect before, android.graphics.Rect after) {
-        if (before.width() == after.width() && before.height() == after.height()) return;
-        Log.i(TAG, "MBDBG bubble content taskBounds=" + before.width() + "x" + before.height()
-                + " -> " + after.width() + "x" + after.height());
-    }
-
     /** 内容缩放要在布局稳定后应用，否则拿到的是旧的内容区尺寸。 */
     private static void postBubbleContentScale(View expandedView) {
         expandedView.postOnAnimation(() -> applyBubbleContentScale(expandedView));
     }
 
     /**
-     * 内容缩放：任务视图按「窗口内容区 / scale」排版，再整体缩小 scale 显示。
-     * app 因此认为自己有一块更大的屏幕，文字与控件随之变小，画面仍然铺满窗口。
-     * 窗口本身（轮廓、指针、居中）不受影响。
+     * 内容缩放：app 的排版尺寸已由尺寸源头放大到「窗口 ÷ scale」（见 contentWidth / maxHeight /
+     * expandedHeight 三处），这里把画面按 scale 缩回窗口，文字与控件随之变小，画面仍铺满窗口。
+     * 窗口本身（轮廓、指针、居中）尺寸不变。
      */
     private static void applyBubbleContentScale(View expandedView) {
         try {
             Object taskObj = getFieldSystemUi(expandedView, "mTaskView");
             if (!(taskObj instanceof View)) return;
             View taskView = (View) taskObj;
-            float scale = contentScaleFactor(expandedView);
+            Object positioner = getFieldSystemUi(expandedView, "mPositioner");
+            float scale = bubbleContentScale(positioner);
 
             if (scale >= 1f) {
                 if (sContentScaleTaskView != taskView) return;
-                taskView.setScaleX(1f);
-                taskView.setScaleY(1f);
-                ViewGroup.LayoutParams params = taskView.getLayoutParams();
-                if (params != null && params.height != ViewGroup.LayoutParams.MATCH_PARENT) {
-                    params.height = ViewGroup.LayoutParams.MATCH_PARENT;
-                    taskView.setLayoutParams(params);
-                }
+                resetTaskViewScale(taskView);
                 sContentScaleTaskView = null;
                 sContentScalePercent = 100;
                 Log.i(TAG, "MBDBG bubble content scale off");
                 return;
             }
 
-            int contentWidth = expandedView.getWidth() - expandedView.getPaddingLeft()
-                    - expandedView.getPaddingRight();
-            int contentHeight = expandedView.getHeight() - expandedView.getPaddingTop()
-                    - expandedView.getPaddingBottom();
-            if (contentWidth <= 0 || contentHeight <= 0) return;
-
-            int surfaceWidth = Math.round(contentWidth / scale);
-            int surfaceHeight = Math.round(contentHeight / scale);
             int percent = Math.round(scale * 100f);
+            // 系统可能把任务视图的布局参数改回默认值，所以这里每次都核对实际状态。
             if (sContentScaleTaskView == taskView && sContentScalePercent == percent
-                    && sContentScaleWidth == surfaceWidth && sContentScaleHeight == surfaceHeight) {
+                    && taskView.getScaleX() == scale) {
                 return;
             }
             sContentScaleTaskView = taskView;
             sContentScalePercent = percent;
-            sContentScaleWidth = surfaceWidth;
-            sContentScaleHeight = surfaceHeight;
 
-            ViewGroup.LayoutParams params = taskView.getLayoutParams();
-            if (params != null) {
-                params.width = surfaceWidth;
-                params.height = surfaceHeight;
-                taskView.setLayoutParams(params);
-            }
             taskView.setPivotX(0f);
             taskView.setPivotY(0f);
             taskView.setScaleX(scale);
             taskView.setScaleY(scale);
-            // 画面比窗口大，必须关掉裁剪，否则只会显示左上角一块。
+            // 排版框比窗口大，必须关掉裁剪，否则只会显示左上角一块。
             if (expandedView instanceof ViewGroup) {
                 ViewGroup group = (ViewGroup) expandedView;
                 group.setClipChildren(false);
@@ -799,11 +711,21 @@ public class MoreBubbleHookModule extends XposedModule {
             setFieldSystemUi(expandedView, "mIsClipping", false);
             invokeSurfaceMethod(taskView, "setEnableSurfaceClipping", boolean.class, false);
             Log.i(TAG, "MBDBG bubble content scale percent=" + percent
-                    + " window=" + contentWidth + "x" + contentHeight
-                    + " surface=" + surfaceWidth + "x" + surfaceHeight);
+                    + " taskView=" + taskView.getWidth() + "x" + taskView.getHeight()
+                    + " window=" + (expandedView.getWidth() - expandedView.getPaddingLeft()
+                            - expandedView.getPaddingRight())
+                    + "x" + (expandedView.getHeight() - expandedView.getPaddingTop()
+                            - expandedView.getPaddingBottom()));
         } catch (Throwable t) {
             Log.i(TAG, "MBDBG bubble content scale failed: " + t.getMessage());
         }
+    }
+
+    private static void resetTaskViewScale(View taskView) {
+        taskView.setScaleX(1f);
+        taskView.setScaleY(1f);
+        taskView.setPivotX(0f);
+        taskView.setPivotY(0f);
     }
 
     /** 每个尺寸源头 × 每套百分比只打印一次，用来确认设备走哪套布局、模块读到什么配置。 */
