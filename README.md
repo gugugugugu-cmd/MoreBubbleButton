@@ -114,7 +114,7 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 
 > `getTaskViewContentWidth()` 内部会减去容器左内边距，而居中逻辑刚好加宽了它，因此宽度换算时需要把该偏移补回，否则实际比例会小于设置值。
 
-百分比变化时模块会输出 `MBDBG bubble size apply` 日志（含 `source`、`percent`、`before -> after`）用于核对。
+百分比变化时模块会输出 `MBDBG bubble size apply` 日志（含 `source`、`axis`、`percent`、`before -> after`）；同时每个尺寸源头在每个进程里会输出一次 `MBDBG bubble size probe` 日志，用来确认设备实际走的是浮动气泡还是气泡栏布局，以及模块读到的百分比。
 
 ## 构建
 

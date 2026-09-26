@@ -299,7 +299,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
     // ==================== Android 17 App Bubble 尺寸 ====================
     // 气泡浮窗由「容器视图」和「任务窗口」两部分组成：
-    //   * 容器视图（BubbleExpandedView / BubbleBarExpandedView）负责圆角轮廓、阴影、把手；
+    //   * 容器视图（BubbleExpandedView / BubbleBarExpandedView）负责圆角轮廓、阴影、指针；
     //   * 任务窗口（承载 app 内容）的 bounds 由 BubblePositioner.getTaskViewRestBounds() 计算，
     //     而它在气泡栏模式下会直接复用 getBubbleBarExpandedViewBounds() 的结果。
     // 这两部分各自从下面的尺寸源头取值。只改 getTaskViewRestBounds() 会出现
@@ -307,24 +307,28 @@ public class MoreBubbleHookModule extends XposedModule {
     // 因此这里统一在尺寸源头缩放，保证轮廓与内容始终一致。
     private static volatile int sLoggedWidthPercent = -1;
     private static volatile int sLoggedHeightPercent = -1;
-    private static volatile Object sPaddingOwner;
-    private static volatile int sPaddingDelta;
+    private static final java.util.Set<String> sProbedSources =
+            java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     private void hookAndroid17BubbleBounds(ClassLoader cl) {
         try {
             Class<?> positioner = cl.loadClass("com.android.wm.shell.bubbles.BubblePositioner");
             Method showVertically = positioner.getDeclaredMethod("showBubblesVertically");
+            Method containerPadding = positioner.getDeclaredMethod("getExpandedViewContainerPadding",
+                    boolean.class, boolean.class);
 
             // 旧式浮窗宽度：容器宽度与任务窗口宽度共用
             Method contentWidth = positioner.getDeclaredMethod("getTaskViewContentWidth", boolean.class);
             hook(contentWidth).intercept(chain -> {
                 int raw = (int) chain.proceed();
                 Object positionerObj = chain.getThisObject();
+                bubblesizeProbe(positionerObj, "contentWidth");
                 int percent = bubbleSizePercent(positionerObj, true);
                 if (percent == 100 || raw <= 0) return raw;
                 // getTaskViewContentWidth() 内部会减掉容器左内边距，而居中逻辑刚好加宽了它，
                 // 这里先把那部分补回来，保证缩放比例与设置一致。
-                int delta = sPaddingOwner == positionerObj ? sPaddingDelta : 0;
+                boolean onLeft = Boolean.TRUE.equals(chain.getArg(0));
+                int delta = centeringDelta(positionerObj, showVertically, containerPadding, onLeft);
                 int span = raw + delta;
                 int scaled = clampBubbleLength(positionerObj,
                         (int) Math.round(span * percent / 100.0), true);
@@ -336,6 +340,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Method maxHeight = positioner.getDeclaredMethod("getMaxExpandedViewHeight", boolean.class);
             hook(maxHeight).intercept(chain -> {
                 int original = (int) chain.proceed();
+                bubblesizeProbe(chain.getThisObject(), "maxHeight");
                 return scaleBubbleLength(chain.getThisObject(), original, false, "maxHeight");
             });
 
@@ -344,7 +349,9 @@ public class MoreBubbleHookModule extends XposedModule {
             Method expandedHeight = positioner.getDeclaredMethod("getExpandedViewHeight", viewProvider);
             hook(expandedHeight).intercept(chain -> {
                 float original = (float) chain.proceed();
-                int percent = bubbleSizePercent(chain.getThisObject(), false);
+                Object positionerObj = chain.getThisObject();
+                bubblesizeProbe(positionerObj, "expandedHeight");
+                int percent = bubbleSizePercent(positionerObj, false);
                 if (percent == 100 || original <= 0f) return original;
                 return original * percent / 100f;
             });
@@ -353,24 +360,15 @@ public class MoreBubbleHookModule extends XposedModule {
             // 这里把余量的一半补到左侧内边距，使窗口始终位于原来空间的中间。
             // 仅用于「横向气泡行」布局（手机竖屏）：此时图标行居中于屏幕，窗口居中后指针仍能指向图标。
             // 横屏/大屏是侧边竖向气泡列，窗口贴列摆放，居中会让指针够不到图标，因此保持系统默认。
-            Method containerPadding = positioner.getDeclaredMethod("getExpandedViewContainerPadding",
-                    boolean.class, boolean.class);
             hook(containerPadding).intercept(chain -> {
                 int[] result = (int[]) chain.proceed();
                 try {
                     if (result == null || result.length < 4) return result;
                     Object positionerObj = chain.getThisObject();
+                    bubblesizeProbe(positionerObj, "containerPadding");
                     int percent = bubbleSizePercent(positionerObj, true);
-                    if (percent == 100) {
-                        sPaddingOwner = null;
-                        sPaddingDelta = 0;
-                        return result;
-                    }
-                    if (Boolean.TRUE.equals(showVertically.invoke(positionerObj))) {
-                        sPaddingOwner = null;
-                        sPaddingDelta = 0;
-                        return result;
-                    }
+                    if (percent == 100) return result;
+                    if (Boolean.TRUE.equals(showVertically.invoke(positionerObj))) return result;
                     android.graphics.Rect screen = (android.graphics.Rect)
                             getFieldSystemUi(positionerObj, "mScreenRect");
                     if (screen == null) return result;
@@ -379,8 +377,6 @@ public class MoreBubbleHookModule extends XposedModule {
                     int delta = (int) Math.round(span * (100.0 - percent) / 100.0 / 2.0);
                     if (delta <= 0) return result;
                     result[0] += delta;
-                    sPaddingOwner = positionerObj;
-                    sPaddingDelta = delta;
                     logBubbleSize("containerPadding", true, percent, span, delta);
                 } catch (Throwable t) {
                     log(Log.WARN, TAG, "bubble centre padding skipped: " + t.getMessage());
@@ -394,9 +390,9 @@ public class MoreBubbleHookModule extends XposedModule {
             hook(pointerPosition).intercept(chain -> {
                 float original = (float) chain.proceed();
                 Object positionerObj = chain.getThisObject();
-                if (sPaddingOwner != positionerObj) return original;
-                int delta = sPaddingDelta;
-                if (delta == 0) return original;
+                bubblesizeProbe(positionerObj, "pointerPosition");
+                int delta = centeringDelta(positionerObj, showVertically, containerPadding, false);
+                if (delta <= 0) return original;
                 float adjusted = original - delta;
                 logBubbleSize("pointerOffset", true, bubbleSizePercent(positionerObj, true),
                         (int) original, (int) adjusted);
@@ -412,6 +408,7 @@ public class MoreBubbleHookModule extends XposedModule {
                     Object target = chain.getArg(2);
                     if (!(target instanceof android.graphics.Rect)) return result;
                     Object positionerObj = chain.getThisObject();
+                    bubblesizeProbe(positionerObj, "barBounds");
                     int widthPercent = bubbleSizePercent(positionerObj, true);
                     int heightPercent = bubbleSizePercent(positionerObj, false);
                     if (widthPercent == 100 && heightPercent == 100) return result;
@@ -459,6 +456,27 @@ public class MoreBubbleHookModule extends XposedModule {
         return scaled;
     }
 
+    /**
+     * 水平居中会让容器左内边距变大，这里从实际内边距反推出我们额外加的那部分。
+     * 未居中（100%）或竖向气泡列布局时返回 0，因此不依赖任何跨调用的状态。
+     */
+    private static int centeringDelta(Object positionerObj, Method showVertically,
+            Method containerPadding, boolean onLeft) {
+        try {
+            if (Boolean.TRUE.equals(showVertically.invoke(positionerObj))) return 0;
+            if (bubbleSizePercent(positionerObj, true) == 100) return 0;
+            int[] padding = (int[]) containerPadding.invoke(positionerObj, onLeft, false);
+            if (padding == null || padding.length < 4) return 0;
+            android.graphics.Insets insets = (android.graphics.Insets)
+                    getFieldSystemUi(positionerObj, "mInsets");
+            int base = (insets != null ? insets.left : 0)
+                    + getIntFieldSystemUi(positionerObj, "mExpandedViewPadding", 0);
+            return Math.max(0, padding[0] - base);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
     /** 缩放结果必须落在屏幕范围内。 */
     private static int clampBubbleLength(Object positionerObj, int value, boolean width) {
         android.graphics.Rect screen = (android.graphics.Rect)
@@ -469,6 +487,12 @@ public class MoreBubbleHookModule extends XposedModule {
         return (int) Math.max(1L, Math.min(limit, value));
     }
 
+    /** 读取 int 类型字段，取不到或类型不符时返回兜底值。 */
+    private static int getIntFieldSystemUi(Object obj, String name, int fallback) {
+        Object value = getFieldSystemUi(obj, name);
+        return value instanceof Integer ? (Integer) value : fallback;
+    }
+
     /** 读取用户在模块设置里配置的百分比，取不到时按系统默认 100%。 */
     private static int bubbleSizePercent(Object positionerObj, boolean width) {
         Context ctx = (Context) getFieldSystemUi(positionerObj, "mContext");
@@ -476,6 +500,15 @@ public class MoreBubbleHookModule extends XposedModule {
         return width
                 ? ModuleSettings.getBubbleWidthPercent(ctx)
                 : ModuleSettings.getBubbleHeightPercent(ctx);
+    }
+
+    /** 每个尺寸源头在每个进程里只打印一次，用来确认设备实际走的是哪套布局。 */
+    private static void bubblesizeProbe(Object positionerObj, String source) {
+        if (sProbedSources.contains(source)) return;
+        if (!sProbedSources.add(source)) return;
+        Log.i(TAG, "MBDBG bubble size probe source=" + source
+                + " widthPercent=" + bubbleSizePercent(positionerObj, true)
+                + " heightPercent=" + bubbleSizePercent(positionerObj, false));
     }
 
     /** 同一方向的百分比变化时才打印一次，避免布局回调刷屏。 */
