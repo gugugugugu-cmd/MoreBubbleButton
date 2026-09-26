@@ -441,8 +441,28 @@ public class MoreBubbleHookModule extends XposedModule {
             });
 
             log(Log.INFO, TAG, "Hooked Android 17 BubblePositioner size sources");
+            logBubbleSizeSettings();
         } catch (Throwable t) {
             logThrowable("hook Android 17 bubble size sources", t);
+        }
+    }
+
+    /** 挂载后回读一次设置，确认 SystemUI 进程能否通过 ContentProvider 读到模块配置。 */
+    private void logBubbleSizeSettings() {
+        try {
+            Object app = Class.forName("android.app.ActivityThread")
+                    .getMethod("currentApplication").invoke(null);
+            if (!(app instanceof Context)) {
+                log(Log.WARN, TAG, "MBDBG bubble size settings unavailable: SystemUI context not ready");
+                return;
+            }
+            Context ctx = (Context) app;
+            log(Log.INFO, TAG, "MBDBG bubble size settings"
+                    + " pkg=" + ctx.getPackageName()
+                    + " width=" + ModuleSettings.getBubbleWidthPercent(ctx)
+                    + " height=" + ModuleSettings.getBubbleHeightPercent(ctx));
+        } catch (Throwable t) {
+            log(Log.WARN, TAG, "MBDBG bubble size settings read failed: " + t.getMessage());
         }
     }
 
