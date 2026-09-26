@@ -312,6 +312,8 @@ public class MoreBubbleHookModule extends XposedModule {
     private static volatile long sAlignLoggedAt;
     private static volatile View sContentScaleTaskView;
     private static volatile int sContentScalePercent = 100;
+    private static volatile int sContentScaleWidth;
+    private static volatile int sContentScaleHeight;
     private static final java.util.Set<String> sProbedSources =
             java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
@@ -680,25 +682,61 @@ public class MoreBubbleHookModule extends XposedModule {
             if (scale >= 1f) {
                 if (sContentScaleTaskView != taskView) return;
                 resetTaskViewScale(taskView);
+                resetBackgroundContainer(expandedView);
                 sContentScaleTaskView = null;
                 sContentScalePercent = 100;
+                sContentScaleWidth = 0;
+                sContentScaleHeight = 0;
                 Log.i(TAG, "MBDBG bubble content scale off");
                 return;
             }
 
             int percent = Math.round(scale * 100f);
-            // 系统可能把任务视图的布局参数改回默认值，所以这里每次都核对实际状态。
+            // 用布局参数推算排版尺寸（比测量尺寸可靠：布局可能还没跑完）。
+            ViewGroup.LayoutParams taskParams = taskView.getLayoutParams();
+            int layoutWidth = taskParams != null && taskParams.width > 0
+                    ? taskParams.width : taskView.getWidth();
+            int layoutHeight = taskParams != null && taskParams.height > 0
+                    ? taskParams.height : taskView.getHeight();
+            int visibleWidth = Math.round(layoutWidth * scale);
+            int visibleHeight = Math.round(layoutHeight * scale);
+            // 系统可能把布局参数改回默认值，所以这里每次都核对实际状态。
             if (sContentScaleTaskView == taskView && sContentScalePercent == percent
-                    && taskView.getScaleX() == scale) {
+                    && taskView.getScaleX() == scale && sContentScaleWidth == visibleWidth
+                    && sContentScaleHeight == visibleHeight) {
                 return;
             }
             sContentScaleTaskView = taskView;
             sContentScalePercent = percent;
+            sContentScaleWidth = visibleWidth;
+            sContentScaleHeight = visibleHeight;
 
             taskView.setPivotX(0f);
             taskView.setPivotY(0f);
             taskView.setScaleX(scale);
             taskView.setScaleY(scale);
+
+            // 圆角窗口与底色是 BubbleExpandedView.mExpandedViewContainer（WRAP_CONTENT），
+            // 它按任务视图的「排版尺寸」撑开——而 View 缩放不改变测量尺寸，
+            // 所以必须把它固定成缩放后的可见尺寸，否则底色会比画面多出一圈（就是那条白色轮廓）。
+            Object containerObj = getFieldSystemUi(expandedView, "mExpandedViewContainer");
+            if (containerObj instanceof ViewGroup && visibleWidth > 0 && visibleHeight > 0) {
+                ViewGroup container = (ViewGroup) containerObj;
+                ViewGroup.LayoutParams params = container.getLayoutParams();
+                if (params instanceof android.widget.LinearLayout.LayoutParams) {
+                    if (params.width != visibleWidth || params.height != visibleHeight) {
+                        params.width = visibleWidth;
+                        params.height = visibleHeight;
+                        container.setLayoutParams(params);
+                    }
+                } else {
+                    container.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                            visibleWidth, visibleHeight));
+                }
+                // 画面（排版尺寸）比窗口大，交给整体缩放收进窗口，所以这里不裁剪。
+                container.setClipChildren(false);
+            }
+
             // 排版框比窗口大，必须关掉裁剪，否则只会显示左上角一块。
             if (expandedView instanceof ViewGroup) {
                 ViewGroup group = (ViewGroup) expandedView;
@@ -711,11 +749,8 @@ public class MoreBubbleHookModule extends XposedModule {
             setFieldSystemUi(expandedView, "mIsClipping", false);
             invokeSurfaceMethod(taskView, "setEnableSurfaceClipping", boolean.class, false);
             Log.i(TAG, "MBDBG bubble content scale percent=" + percent
-                    + " taskView=" + taskView.getWidth() + "x" + taskView.getHeight()
-                    + " window=" + (expandedView.getWidth() - expandedView.getPaddingLeft()
-                            - expandedView.getPaddingRight())
-                    + "x" + (expandedView.getHeight() - expandedView.getPaddingTop()
-                            - expandedView.getPaddingBottom()));
+                    + " layout=" + layoutWidth + "x" + layoutHeight
+                    + " visible=" + visibleWidth + "x" + visibleHeight);
         } catch (Throwable t) {
             Log.i(TAG, "MBDBG bubble content scale failed: " + t.getMessage());
         }
@@ -726,6 +761,27 @@ public class MoreBubbleHookModule extends XposedModule {
         taskView.setScaleY(1f);
         taskView.setPivotX(0f);
         taskView.setPivotY(0f);
+    }
+
+    /** 关闭内容缩放时把圆角窗口恢复成 WRAP_CONTENT（跟随任务视图排版尺寸）。 */
+    private static void resetBackgroundContainer(View expandedView) {
+        try {
+            Object containerObj = getFieldSystemUi(expandedView, "mExpandedViewContainer");
+            if (!(containerObj instanceof ViewGroup)) return;
+            ViewGroup container = (ViewGroup) containerObj;
+            ViewGroup.LayoutParams params = container.getLayoutParams();
+            if (params == null || params.width == ViewGroup.LayoutParams.WRAP_CONTENT) return;
+            if (params instanceof android.widget.LinearLayout.LayoutParams) {
+                params.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+                params.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                container.setLayoutParams(params);
+            } else {
+                container.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+        } catch (Throwable t) {
+            Log.i(TAG, "MBDBG bubble content scale reset failed: " + t.getMessage());
+        }
     }
 
     /** 每个尺寸源头 × 每套百分比只打印一次，用来确认设备走哪套布局、模块读到什么配置。 */
