@@ -307,6 +307,9 @@ public class MoreBubbleHookModule extends XposedModule {
     // 因此这里统一在尺寸源头缩放，保证轮廓与内容始终一致。
     private static volatile int sLoggedWidthPercent = -1;
     private static volatile int sLoggedHeightPercent = -1;
+    private static volatile View sAlignTargetView;
+    private static volatile float sAlignIconLeft;
+    private static volatile long sAlignLoggedAt;
     private static final java.util.Set<String> sProbedSources =
             java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
@@ -397,6 +400,45 @@ public class MoreBubbleHookModule extends XposedModule {
                 logBubbleSize("pointerOffset", true, bubbleSizePercent(positionerObj, true),
                         (int) original, (int) adjusted);
                 return adjusted;
+            });
+
+            // 指针实测校准（一）：指针更新时记住图标左边界，并在布局后实测指针位置对齐。
+            Class<?> expandedViewCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleExpandedView");
+            Method setPointer = expandedViewCls.getDeclaredMethod("setPointerPosition",
+                    float.class, boolean.class, boolean.class);
+            hook(setPointer).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    Object viewObj = chain.getThisObject();
+                    Object iconLeft = chain.getArg(0);
+                    if (viewObj instanceof View && iconLeft instanceof Float
+                            && isCenteredBubbleLayout(viewObj)) {
+                        sAlignTargetView = (View) viewObj;
+                        sAlignIconLeft = (Float) iconLeft;
+                        alignPointerToIcon((View) viewObj, sAlignIconLeft, 0);
+                    }
+                } catch (Throwable t) {
+                    log(Log.WARN, TAG, "pointer align schedule skipped: " + t.getMessage());
+                }
+                return result;
+            });
+
+            // 指针实测校准（二）：居中只改容器内边距时可能不触发指针更新，
+            // 展开视图重新布局后再校准一次，避免小突出停在居中前的位置。
+            Class<?> stackViewCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleStackView");
+            Method updateExpanded = stackViewCls.getDeclaredMethod("updateExpandedView", boolean.class);
+            hook(updateExpanded).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    Object viewObj = invokeSystemUi(chain.getThisObject(), "getExpandedView");
+                    if (viewObj instanceof View && sAlignTargetView == viewObj
+                            && isCenteredBubbleLayout(viewObj)) {
+                        alignPointerToIcon((View) viewObj, sAlignIconLeft, 0);
+                    }
+                } catch (Throwable t) {
+                    log(Log.WARN, TAG, "pointer align after expand skipped: " + t.getMessage());
+                }
+                return result;
             });
 
             // 气泡栏模式：容器与任务窗口共用同一个 Rect，按底边锚点缩放并水平居中
@@ -520,6 +562,67 @@ public class MoreBubbleHookModule extends XposedModule {
         return width
                 ? ModuleSettings.getBubbleWidthPercent(ctx)
                 : ModuleSettings.getBubbleHeightPercent(ctx);
+    }
+
+    /** 当前是否处于「横向气泡行 + 已缩放」的居中状态；只有这种状态才需要校准指针。 */
+    private static boolean isCenteredBubbleLayout(Object expandedView) {
+        try {
+            Object positioner = getFieldSystemUi(expandedView, "mPositioner");
+            if (positioner == null) return false;
+            if (bubbleSizePercent(positioner, true) == 100) return false;
+            Method showVertically = positioner.getClass().getMethod("showBubblesVertically");
+            return !Boolean.TRUE.equals(showVertically.invoke(positioner));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 布局稳定后实测指针三角形的屏幕位置，把它对齐到上方气泡图标的中心。
+     * 不同机型上指针更新与容器内边距布局的先后顺序不同，实测比推算更可靠；
+     * 偏移超过指针自身宽度说明图标已落在窗口之外，此时只记录不改动。
+     */
+    private static void alignPointerToIcon(View expandedView, float iconLeft, int attempt) {
+        expandedView.postOnAnimation(() -> {
+            try {
+                Object positioner = getFieldSystemUi(expandedView, "mPositioner");
+                int bubbleSize = getIntFieldSystemUi(positioner, "mBubbleSize", 0);
+                Object pointerObj = getFieldSystemUi(expandedView, "mPointerView");
+                if (!(pointerObj instanceof View) || bubbleSize <= 0) return;
+                View pointer = (View) pointerObj;
+                if (pointer.getVisibility() != View.VISIBLE || pointer.getWidth() <= 0) return;
+
+                float iconCenter = iconLeft + bubbleSize / 2f;
+                int[] location = new int[2];
+                pointer.getLocationOnScreen(location);
+                float pointerCenter = location[0] + pointer.getWidth() / 2f;
+                float shift = iconCenter - pointerCenter;
+                int[] viewLocation = new int[2];
+                expandedView.getLocationOnScreen(viewLocation);
+                // 图标必须在窗口顶边范围内才能指得到；否则说明图标已落在窗口之外，保持系统钳制结果。
+                boolean iconInsideWindow = iconCenter >= viewLocation[0] - 1f
+                        && iconCenter <= viewLocation[0] + expandedView.getWidth() + 1f;
+                boolean fixable = Math.abs(shift) > 1f && iconInsideWindow;
+                if (fixable) {
+                    pointer.setTranslationX(pointer.getTranslationX() + shift);
+                }
+                if (attempt == 0 && Math.abs(shift) > 1f) {
+                    long now = android.os.SystemClock.uptimeMillis();
+                    if (now - sAlignLoggedAt > 1000L) {
+                        sAlignLoggedAt = now;
+                        Log.i(TAG, "MBDBG pointer align iconCenter=" + iconCenter
+                                + " pointerCenter=" + pointerCenter
+                                + " shift=" + shift
+                                + " viewLeft=" + viewLocation[0]
+                                + " viewWidth=" + expandedView.getWidth()
+                                + (fixable ? " applied" : " skipped(outside)"));
+                    }
+                }
+                if (attempt < 1) alignPointerToIcon(expandedView, iconLeft, attempt + 1);
+            } catch (Throwable t) {
+                Log.i(TAG, "MBDBG pointer align failed: " + t.getMessage());
+            }
+        });
     }
 
     /** 每个尺寸源头 × 每套百分比只打印一次，用来确认设备走哪套布局、模块读到什么配置。 */
