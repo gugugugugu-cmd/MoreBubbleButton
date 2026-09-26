@@ -408,6 +408,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
             // 内容缩放（一）：气泡里 app 的排版尺寸按 1/scale 放大，画面再按 scale 缩回窗口，
             // 等于给这个窗口更高的显示密度，文字与控件会一起变小而不是只被裁掉。
+            Class<?> expandedViewCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleExpandedView");
             Method viewContentWidth = expandedViewCls.getDeclaredMethod("getContentWidth");
             hook(viewContentWidth).intercept(chain -> {
                 int original = (int) chain.proceed();
@@ -417,7 +418,6 @@ public class MoreBubbleHookModule extends XposedModule {
             });
 
             // 指针实测校准（一）：指针更新时记住图标左边界，并在布局后实测指针位置对齐。
-            Class<?> expandedViewCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleExpandedView");
             Method setPointer = expandedViewCls.getDeclaredMethod("setPointerPosition",
                     float.class, boolean.class, boolean.class);
             hook(setPointer).intercept(chain -> {
@@ -722,17 +722,16 @@ public class MoreBubbleHookModule extends XposedModule {
             taskView.setScaleX(scale);
             taskView.setScaleY(scale);
             // 画面比窗口大，必须关掉裁剪，否则只会显示左上角一块。
-            expandedView.setClipChildren(false);
-            expandedView.setClipToPadding(false);
+            if (expandedView instanceof ViewGroup) {
+                ViewGroup group = (ViewGroup) expandedView;
+                group.setClipChildren(false);
+                group.setClipToPadding(false);
+            }
             if (expandedView.getParent() instanceof ViewGroup) {
                 ((ViewGroup) expandedView.getParent()).setClipChildren(false);
             }
             setFieldSystemUi(expandedView, "mIsClipping", false);
-            if (taskView instanceof android.view.SurfaceView) {
-                try {
-                    ((android.view.SurfaceView) taskView).setEnableSurfaceClipping(false);
-                } catch (Throwable ignored) {}
-            }
+            invokeSurfaceMethod(taskView, "setEnableSurfaceClipping", boolean.class, false);
             Log.i(TAG, "MBDBG bubble content scale percent=" + percent
                     + " window=" + contentWidth + "x" + contentHeight
                     + " surface=" + surfaceWidth + "x" + surfaceHeight);
@@ -2467,6 +2466,18 @@ public class MoreBubbleHookModule extends XposedModule {
             try { return c.getDeclaredField(n); } catch (NoSuchFieldException e) { c = c.getSuperclass(); }
         }
         return null;
+    }
+
+    /** SurfaceView 上有些方法不在编译用 SDK 里，统一走反射调用。 */
+    private static Object invokeSurfaceMethod(Object target, String name,
+            Class<?> parameterType, Object argument) {
+        if (target == null) return null;
+        try {
+            Method method = target.getClass().getMethod(name, parameterType);
+            return method.invoke(target, argument);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private static void setFieldSystemUi(Object obj, String name, Object value) {
