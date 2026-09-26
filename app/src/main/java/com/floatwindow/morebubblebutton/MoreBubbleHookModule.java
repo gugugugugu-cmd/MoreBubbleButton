@@ -313,6 +313,7 @@ public class MoreBubbleHookModule extends XposedModule {
     private void hookAndroid17BubbleBounds(ClassLoader cl) {
         try {
             Class<?> positioner = cl.loadClass("com.android.wm.shell.bubbles.BubblePositioner");
+            Method showVertically = positioner.getDeclaredMethod("showBubblesVertically");
 
             // 旧式浮窗宽度：容器宽度与任务窗口宽度共用
             Method contentWidth = positioner.getDeclaredMethod("getTaskViewContentWidth", boolean.class);
@@ -350,7 +351,8 @@ public class MoreBubbleHookModule extends XposedModule {
 
             // 旧式浮窗水平居中：展开视图在容器内左对齐，宽度变小后余量全落在一侧会显得贴边，
             // 这里把余量的一半补到左侧内边距，使窗口始终位于原来空间的中间。
-            Method showVertically = positioner.getDeclaredMethod("showBubblesVertically");
+            // 仅用于「横向气泡行」布局（手机竖屏）：此时图标行居中于屏幕，窗口居中后指针仍能指向图标。
+            // 横屏/大屏是侧边竖向气泡列，窗口贴列摆放，居中会让指针够不到图标，因此保持系统默认。
             Method containerPadding = positioner.getDeclaredMethod("getExpandedViewContainerPadding",
                     boolean.class, boolean.class);
             hook(containerPadding).intercept(chain -> {
@@ -364,15 +366,15 @@ public class MoreBubbleHookModule extends XposedModule {
                         sPaddingDelta = 0;
                         return result;
                     }
+                    if (Boolean.TRUE.equals(showVertically.invoke(positionerObj))) {
+                        sPaddingOwner = null;
+                        sPaddingDelta = 0;
+                        return result;
+                    }
                     android.graphics.Rect screen = (android.graphics.Rect)
                             getFieldSystemUi(positionerObj, "mScreenRect");
                     if (screen == null) return result;
-                    int pointerAdjust = 0;
-                    if (Boolean.TRUE.equals(showVertically.invoke(positionerObj))) {
-                        pointerAdjust = getIntFieldSystemUi(positionerObj, "mPointerHeight", 0)
-                                - getIntFieldSystemUi(positionerObj, "mPointerOverlap", 0);
-                    }
-                    int span = screen.width() - result[0] - result[2] - pointerAdjust;
+                    int span = screen.width() - result[0] - result[2];
                     if (span <= 0) return result;
                     int delta = (int) Math.round(span * (100.0 - percent) / 100.0 / 2.0);
                     if (delta <= 0) return result;
@@ -384,6 +386,21 @@ public class MoreBubbleHookModule extends XposedModule {
                     log(Log.WARN, TAG, "bubble centre padding skipped: " + t.getMessage());
                 }
                 return result;
+            });
+
+            // 指针跟随居中：窗口整体右移后，指针的本地 X 仍以旧布局为原点，
+            // 需按同样的偏移量回退，小突出才会继续对准上方的气泡图标。
+            Method pointerPosition = positioner.getDeclaredMethod("getPointerPosition", float.class);
+            hook(pointerPosition).intercept(chain -> {
+                float original = (float) chain.proceed();
+                Object positionerObj = chain.getThisObject();
+                if (sPaddingOwner != positionerObj) return original;
+                int delta = sPaddingDelta;
+                if (delta == 0) return original;
+                float adjusted = original - delta;
+                logBubbleSize("pointerOffset", true, bubbleSizePercent(positionerObj, true),
+                        (int) original, (int) adjusted);
+                return adjusted;
             });
 
             // 气泡栏模式：容器与任务窗口共用同一个 Rect，按底边锚点缩放并水平居中
@@ -450,12 +467,6 @@ public class MoreBubbleHookModule extends XposedModule {
                 ? (screen != null ? screen.width() : value)
                 : (screen != null ? screen.height() : value);
         return (int) Math.max(1L, Math.min(limit, value));
-    }
-
-    /** 读取 int 类型字段，取不到或类型不符时返回兜底值。 */
-    private static int getIntFieldSystemUi(Object obj, String name, int fallback) {
-        Object value = getFieldSystemUi(obj, name);
-        return value instanceof Integer ? (Integer) value : fallback;
     }
 
     /** 读取用户在模块设置里配置的百分比，取不到时按系统默认 100%。 */

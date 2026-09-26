@@ -104,10 +104,13 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 | `BubblePositioner.getTaskViewContentWidth(boolean)` | 浮动气泡宽度（容器宽度 + 任务窗口宽度） |
 | `BubblePositioner.getMaxExpandedViewHeight(boolean)` | 浮动气泡高度上限（容器高度上限 + 任务窗口高度） |
 | `BubblePositioner.getExpandedViewHeight(BubbleViewProvider)` | 浮动气泡资源高度与 Y 轴定位 |
-| `BubblePositioner.getExpandedViewContainerPadding(boolean, boolean)` | 浮动气泡水平居中：把缩小后的余量一半补到左侧内边距 |
+| `BubblePositioner.getExpandedViewContainerPadding(boolean, boolean)` | 横向气泡行布局下的水平居中：把缩小后的余量一半补到左侧内边距 |
+| `BubblePositioner.getPointerPosition(float)` | 指针跟随居中：指针坐标按同样的偏移量回退，小突出继续对准上方图标 |
 | `BubblePositioner.getBubbleBarExpandedViewBounds(boolean, boolean, Rect)` | 气泡栏模式下容器与任务窗口共用的 Rect，按底边锚点缩放并水平居中 |
 
-缩放结果会限制在屏幕范围内；调整为 100% 时不生效。窗口高度保持底部锚点（贴着气泡栏/气泡堆），宽度缩小后会自动水平居中，不会贴边。
+缩放结果会限制在屏幕范围内；调整为 100% 时不生效。窗口高度保持底部锚点（贴着气泡栏/气泡堆），宽度缩小后会自动水平居中，指向气泡图标的小突出会同步跟随。
+
+居中和指针补偿只在**横向气泡行**布局（手机竖屏，图标行居中于屏幕）下启用；横屏/大屏的侧边竖向气泡列保持系统默认的贴列摆放——那种布局下窗口居中会让指针够不到图标列。
 
 > `getTaskViewContentWidth()` 内部会减去容器左内边距，而居中逻辑刚好加宽了它，因此宽度换算时需要把该偏移补回，否则实际比例会小于设置值。
 
