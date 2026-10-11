@@ -32,18 +32,20 @@ jobs:
 
       # compileSdk=37 在 Google 仓库中的包名为 platforms;android-37.0
       # （目录 android-37.0，AGP 按 platforms/android-37 查找），需显式安装并软链。
+      # runner 镜像已自带 SDK + cmdline-tools，跳过重复下载。
       - name: Install Android SDK platform 37 + build-tools
         run: |
-          export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
-          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
-          curl -sSL -o /tmp/ct.zip "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
-          unzip -q /tmp/ct.zip -d /tmp/ct
-          mv /tmp/ct/cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --licenses >/dev/null 2>&1 || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_HOME" \
+          SDK_ROOT="${ANDROID_HOME:-$HOME/android-sdk}"
+          if [ ! -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            mkdir -p "$SDK_ROOT/cmdline-tools/latest"
+            curl -sSL -o /tmp/ct.zip "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+            unzip -q /tmp/ct.zip -d /tmp/ct
+            mv /tmp/ct/cmdline-tools/* "$SDK_ROOT/cmdline-tools/latest/"
+          fi
+          yes | "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
+          "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_ROOT" \
             "platforms;android-37.0" "build-tools;36.0.0" "platform-tools"
-          ln -sfn "$ANDROID_HOME/platforms/android-37.0" "$ANDROID_HOME/platforms/android-37"
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          ln -sfn "$SDK_ROOT/platforms/android-37.0" "$SDK_ROOT/platforms/android-37"
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
