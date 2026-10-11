@@ -242,6 +242,30 @@ public class MoreBubbleHookModule extends XposedModule {
             }
         } catch (Throwable t) { Log.w(TAG, "Hook select guard: " + t.getMessage()); }
 
+        // 7. 屏蔽气泡小窗底部「管理」按钮 (Android 17 BubbleExpandedView)
+        //    管理按钮在 onFinishInflate / updateManageButtonIfExists 中 inflate 并 bringChildToFront。
+        //    这里在重建后立刻置 GONE，并利用 mManageButton 空检查（if-nez 直接 return）
+        //    防止后续任何路径再次重建出可见按钮。
+        try {
+            Class<?> bevCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleExpandedView");
+            hook(bevCls.getMethod("updateManageButtonIfExists")).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    java.lang.reflect.Field f = bevCls.getDeclaredField("mManageButton");
+                    f.setAccessible(true);
+                    Object btn = f.get(chain.getThisObject());
+                    if (btn instanceof View) {
+                        ((View) btn).setVisibility(View.GONE);
+                        Log.i(TAG, "Bubble manage button hidden");
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "hide manage button: " + t.getMessage());
+                }
+                return result;
+            });
+            Log.i(TAG, "Hooked BubbleExpandedView.updateManageButtonIfExists (hide manage btn) OK");
+        } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
+
         Log.i(TAG, "All SystemUI hooks installed");
     }
 

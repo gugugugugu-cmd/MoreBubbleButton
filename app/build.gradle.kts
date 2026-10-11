@@ -68,7 +68,16 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            // 仅在存在有效 keystore 时才签名。
+            // CI 上不提供签名凭据 → 产出未签名(unsiged) APK。
+            val relSigning = signingConfigs.getByName("release")
+            val ksFile = relSigning.storeFile
+            if (ksFile != null && ksFile.exists() && ksFile.length() > 0L
+                && !relSigning.storePassword.isNullOrEmpty()
+                && !relSigning.keyAlias.isNullOrEmpty()
+                && !relSigning.keyPassword.isNullOrEmpty()) {
+                signingConfig = relSigning
+            }
         }
     }
 
