@@ -175,14 +175,18 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             if (onUserChanged != null) {
                 hook(onUserChanged).intercept(chain -> {
+                    // 必须先放行原方法：它负责把通知标记为可气泡（Notification.flags |= FLAG_BUBBLE）、
+                    // channel.setAllowBubbles(true)、必要时 setBubblesAllowed()，并折叠 shade。
+                    // 这些是气泡能被系统接受、不会立刻被清掉的前置条件，跳过会导致小窗一闪即灭。
+                    Object result = chain.proceed();
                     try {
                         boolean enabled = (boolean) chain.getArg(1);
                         Object entry = chain.getArg(0);
-                        if (enabled && entry != null && expandAppBubbleFromNotification(chain.getThisObject(), entry, "user change")) {
-                            return null;
+                        if (enabled && entry != null) {
+                            expandAppBubbleFromNotification(chain.getThisObject(), entry, "user change");
                         }
                     } catch (Throwable t) { Log.w(TAG, "user change bubble: " + t.getMessage()); }
-                    return chain.proceed();
+                    return result;
                 });
                 Log.i(TAG, "Hooked BubblesManager.onUserChangedBubble OK");
             } else {
