@@ -295,27 +295,13 @@ public class MoreBubbleHookModule extends XposedModule {
                 targetIntent.setPackage(pkg);
             }
             targetIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-            Object entryPoint = findEntryPoint(controller.getClass().getClassLoader(), "NOTIFICATION");
             final Intent finalIntent = targetIntent;
             final UserHandle finalUser = user;
             Runnable work = () -> {
                 try {
-                    Method expand = findMethodSystemUi(controller.getClass(), "expandStackAndSelectBubble",
-                            Intent.class, UserHandle.class, entryPoint != null ? entryPoint.getClass() : Object.class,
-                            clOrNull(controller.getClass().getClassLoader(), "com.android.wm.shell.shared.bubbles.BubbleBarLocation"));
-                    if (expand == null) {
-                        for (Method m : controller.getClass().getDeclaredMethods()) {
-                            if (m.getName().equals("expandStackAndSelectBubble")
-                                    && m.getParameterCount() == 4
-                                    && m.getParameterTypes()[0] == Intent.class) {
-                                m.setAccessible(true);
-                                expand = m;
-                                break;
-                            }
-                        }
-                    }
-                    if (expand != null) {
-                        expand.invoke(controller, finalIntent, finalUser, entryPoint, null);
+                    boolean done = expandAppBubbleA17(controller, finalIntent, finalUser, reason);
+                    if (!done) done = expandAppBubbleLegacy(controller, finalIntent, finalUser, reason);
+                    if (done) {
                         Log.i(TAG, reason + ": expanded app bubble for " + pkg);
                         runOnSysuiMain(bubblesManager, () -> dismissClickedNotificationIfAutoCancel(bubblesManager, entry));
                         runOnSysuiMain(bubblesManager, () -> collapseShadeFromManager(bubblesManager));
@@ -334,6 +320,134 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.w(TAG, reason + ": app bubble schedule failed: " + t.getMessage());
             return false;
         }
+    }
+
+    /**
+     * Android 17 官方配方（与 BubbleController$IBubblesImpl$$ExternalSyntheticLambda13 / IBubbles.showAppBubble 一致）：
+     *   key    = Bubble.getAppBubbleKeyForApp(intent.getPackage(), user)
+     *   bubble = data.findAndRemoveBubbleFromOverflow(key)
+     *   if (bubble == null) {
+     *       pm   = BubbleController.getPackageManagerForUser(user.getIdentifier(), data.mContext)
+     *       icon = data.mAppInfoProvider.getActivityInfoIcon(pm, intent)
+     *       bubble = new Bubble(intent, user, icon, Bubble$BubbleType.TYPE_APP, key)
+     *   }
+     *   controller.expandStackAndSelectAppBubble(bubble, EntryPoint.NOTIFICATION_BUBBLE_BUTTON, null)
+     *
+     * Android 17 已删除旧的
+     * expandStackAndSelectBubble(Intent, UserHandle, EntryPoint, BubbleBarLocation)，这是通知横幅气泡
+     * 点击后打不开小窗的根因。
+     */
+    private static boolean expandAppBubbleA17(Object controller, Intent intent, UserHandle user, String reason) {
+        try {
+            ClassLoader cl = controller.getClass().getClassLoader();
+            Class<?> bubbleCls = cl.loadClass("com.android.wm.shell.bubbles.Bubble");
+            Class<?> dataCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleData");
+            Class<?> typeCls = cl.loadClass("com.android.wm.shell.bubbles.Bubble$BubbleType");
+            Class<?> epCls = cl.loadClass("com.android.wm.shell.shared.bubbles.logging.EntryPoint");
+            Class<?> reqCls = cl.loadClass("com.android.wm.shell.shared.bubbles.BubbleBarLocation$UpdateLocationRequest");
+
+            Method expand = findMethodSystemUi(controller.getClass(), "expandStackAndSelectAppBubble",
+                    bubbleCls, epCls, reqCls);
+            if (expand == null) return false;
+
+            Object data = getFieldSystemUi(controller, "mBubbleData");
+            if (data == null) return false;
+
+            String pkg = intent.getPackage();
+            if (pkg == null) return false;
+
+            Method keyForApp = findMethodSystemUi(bubbleCls, "getAppBubbleKeyForApp", String.class, UserHandle.class);
+            if (keyForApp == null) return false;
+            String key = (String) keyForApp.invoke(null, pkg, user);
+
+            Method findOverflow = findMethodSystemUi(dataCls, "findAndRemoveBubbleFromOverflow", String.class);
+            Object bubble = findOverflow != null ? findOverflow.invoke(data, key) : null;
+
+            if (bubble == null) {
+                Object typeApp = enumConstant(typeCls, "TYPE_APP");
+                if (typeApp == null) return false;
+                Context dataCtx = (Context) getFieldSystemUi(data, "mContext");
+                if (dataCtx == null) return false;
+                Object pm;
+                Method getPm = findMethodSystemUi(controller.getClass(),
+                        "getPackageManagerForUser", int.class, Context.class);
+                pm = getPm != null ? getPm.invoke(null, userIdOf(user), dataCtx)
+                        : dataCtx.getPackageManager();
+                Object icon = null;
+                Object appInfoProvider = getFieldSystemUi(data, "mAppInfoProvider");
+                if (appInfoProvider != null) {
+                    Method getIcon = findMethodSystemUi(appInfoProvider.getClass(), "getActivityInfoIcon",
+                            android.content.pm.PackageManager.class, Intent.class);
+                    if (getIcon != null) {
+                        try { icon = getIcon.invoke(appInfoProvider, pm, intent); } catch (Throwable ignored) {}
+                    }
+                }
+                java.lang.reflect.Constructor<?> ctor = bubbleCls.getConstructor(
+                        Intent.class, UserHandle.class, android.graphics.drawable.Icon.class, typeCls, String.class);
+                bubble = ctor.newInstance(intent, user, icon, typeApp, key);
+            }
+            if (bubble == null) return false;
+
+            Object entryPoint = enumConstant(epCls, "NOTIFICATION_BUBBLE_BUTTON");
+            if (entryPoint == null) entryPoint = findEntryPoint(cl, "NOTIFICATION");
+            if (entryPoint == null) return false;
+
+            expand.invoke(controller, bubble, entryPoint, null);
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, reason + ": A17 expand failed: " + t.getMessage());
+            return false;
+        }
+    }
+
+    /** Android 16 及以前的旧 API，保留作为回退。 */
+    private static boolean expandAppBubbleLegacy(Object controller, Intent intent, UserHandle user, String reason) {
+        try {
+            ClassLoader cl = controller.getClass().getClassLoader();
+            Object entryPoint = findEntryPoint(cl, "NOTIFICATION");
+            Class<?> locCls = clOrNull(cl, "com.android.wm.shell.shared.bubbles.BubbleBarLocation");
+            Method expand = findMethodSystemUi(controller.getClass(), "expandStackAndSelectBubble",
+                    Intent.class, UserHandle.class,
+                    entryPoint != null ? entryPoint.getClass() : Object.class, locCls);
+            if (expand == null) {
+                for (Method m : controller.getClass().getDeclaredMethods()) {
+                    if (m.getName().equals("expandStackAndSelectBubble")
+                            && m.getParameterCount() == 4
+                            && m.getParameterTypes()[0] == Intent.class) {
+                        m.setAccessible(true);
+                        expand = m;
+                        break;
+                    }
+                }
+            }
+            if (expand == null) return false;
+            expand.invoke(controller, intent, user, entryPoint, null);
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, reason + ": legacy expand failed: " + t.getMessage());
+            return false;
+        }
+    }
+
+    private static Object enumConstant(Class<?> enumCls, String name) {
+        try {
+            for (Object o : (Object[]) enumCls.getMethod("values").invoke(null)) {
+                if (name.equals(o.toString())) return o;
+            }
+        } catch (Throwable t) { Log.w(TAG, "enumConstant: " + t.getMessage()); }
+        return null;
+    }
+
+    private static int userIdOf(UserHandle user) {
+        try {
+            Object id = invokeSystemUi(user, "getIdentifier");
+            if (id instanceof Integer) return (Integer) id;
+        } catch (Throwable ignored) {}
+        try {
+            Method m = UserHandle.class.getMethod("getUserId", UserHandle.class);
+            return (Integer) m.invoke(null, user);
+        } catch (Throwable ignored) {}
+        return 0;
     }
 
     private static Intent getNotificationTargetIntent(Notification notif, String pkg) {
