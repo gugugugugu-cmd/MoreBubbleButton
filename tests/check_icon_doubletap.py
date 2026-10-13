@@ -90,7 +90,8 @@ public class IconTest {
   }
   boolean click(Bubble x)throws Exception{return (boolean)call(h,"handleClick",new Class[]{Object.class,Object.class,View.class},stack,stack.mBubbleClickListener,x.mIconView);}
   void touch(Bubble x,int action,long t,float dx)throws Exception{SystemClock.now=t;call(h,"observeTouch",new Class[]{Object.class,Object.class,View.class,MotionEvent.class},stack,stack.mBubbleTouchListener,x.mIconView,new MotionEvent(action,t,dx,0));}
-  int moves(){return a.mBubbleTaskView.taskView.mTaskViewController.moves+b.mBubbleTaskView.taskView.mTaskViewController.moves;}
+  final Controller ac=a.mBubbleTaskView.taskView.mTaskViewController,bc=b.mBubbleTaskView.taskView.mTaskViewController;
+  int moves(){return ac.moves+bc.moves;}
   int singles(){return stack.mBubbleClickListener.singles;}
  }
  static void set(Object o,String n,Object v)throws Exception{Field f=o.getClass().getDeclaredField(n);f.setAccessible(true);f.set(o,v);}
