@@ -273,49 +273,63 @@ public class MoreBubbleHookModule extends XposedModule {
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
 
         // 8. 双击气泡小窗 -> 全屏展开
-        //    BubbleExpandedView 是 LinearLayout，顶部就是原来「管理」按钮所在的标题区
-        //    （该按钮已被上面的 hook 隐藏，区域空着，挂手势不冲突）。
-        //    触发走官方 TaskViewController.moveTaskViewToFullscreen：
+        //
+        // !! 为什么必须 hook dispatchTouchEvent，而不是 setOnTouchListener !!
+        //  上一版给 BubbleExpandedView 设 setOnTouchListener，实测【双击从不触发】，
+        //  日志里只有 "double-tap fullscreen attached" 而没有 "double tap detected"，
+        //  同时官方 BubbleStackView.onBubbleClick() CLICK 被触发、小窗直接收起
+        //  —— 说明事件被内部子 View（mExpandedViewContainer / mTaskView 等）先行消费，
+        //  根本没回调到容器上的 OnTouchListener（Android 事件分发：子 View 优先）。
+        //  dispatchTouchEvent 在【分发给子 View 之前】必然执行，是唯一稳定能截到事件的位置。
+        //
+        //  行为约定：
+        //   - 双击命中 -> 消费事件(return true)，官方收不到，避免被当成"单击收起"
+        //   - 其余（单击/滑动/拖拽）-> chain.proceed() 原样放行，官方行为不变
+        //
+        //  触发走官方 TaskViewController.moveTaskViewToFullscreen：
         //      mTaskView.mTaskViewController.moveTaskViewToFullscreen(
         //          mTaskView.mTaskViewTaskController)
-        //    → BubbleController$BubbleTaskViewController 内部
-        //      getBubbleInStackWithTaskId(taskInfo.taskId) → BubbleTransitions.startConvertFromBubble
-        //    该实现里 bubble==null 时直接 return，不会抛异常，安全。
+        //   → BubbleController$BubbleTaskViewController 内部
+        //     getBubbleInStackWithTaskId(taskInfo.taskId) → BubbleTransitions.startConvertFromBubble
+        //   该实现 bubble==null 时直接 return，不会抛异常。
         try {
             Class<?> bevCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleExpandedView");
-            hook(bevCls.getMethod("onFinishInflate")).intercept(chain -> {
-                Object result = chain.proceed();
+            Class<?> meCls = cl.loadClass("android.view.MotionEvent");
+            hook(bevCls.getMethod("dispatchTouchEvent", meCls)).intercept(chain -> {
+                Object bev = chain.getThisObject();
+                android.view.MotionEvent ev = (android.view.MotionEvent) chain.getArg(0);
                 try {
-                    Object bev = chain.getThisObject();
-                    if (bev instanceof View) {
-                        Context ctx = ((View) bev).getContext();
-                        if (ctx != null && ModuleSettings.isDoubleTapFullscreenEnabled(ctx)) {
-                            installDoubleTapFullscreen((View) bev, ctx);
+                    if (bev instanceof View && ev != null) {
+                        android.view.GestureDetector detector = detectorFor((View) bev);
+                        if (detector != null && detector.onTouchEvent(ev)) {
+                            // 双击已命中并触发全屏 -> 吞掉本次事件
+                            return true;
                         }
                     }
-                } catch (Throwable t) { Log.w(TAG, "install double tap: " + t.getMessage()); }
-                return result;
+                } catch (Throwable t) { Log.w(TAG, "dispatchTouchEvent double tap: " + t.getMessage()); }
+                return chain.proceed();
             });
-            Log.i(TAG, "Hooked BubbleExpandedView.onFinishInflate (double tap fullscreen) OK");
+            Log.i(TAG, "Hooked BubbleExpandedView.dispatchTouchEvent (double tap fullscreen) OK");
         } catch (Throwable t) { Log.e(TAG, "Hook double tap fullscreen: " + t.getMessage()); }
 
         Log.i(TAG, "All SystemUI hooks installed");
     }
 
-    /** 已挂双击手势的 BubbleExpandedView（幂等） */
-    private static final Map<Object, Boolean> sDoubleTapHooked =
+    /** 每个 BubbleExpandedView 一个 GestureDetector（用 IdentityHashMap 按实例存取） */
+    private static final Map<Object, android.view.GestureDetector> sDoubleTapDetectors =
             Collections.synchronizedMap(new IdentityHashMap<>());
 
     /**
-     * 给气泡小窗挂双击 -> 全屏。
-     * 用 GestureDetector 的 onDoubleTap，装在视图本身上：
-     * 单击/滑动等其它手势照常冒泡给官方逻辑，双击才拦截。
+     * 取（或惰性创建）该 BubbleExpandedView 的双击识别器。
+     * 惰性创建：首次 dispatchTouchEvent 时才知道 Context，且无需依赖 onFinishInflate 时序。
      */
-    private static void installDoubleTapFullscreen(final View view, Context ctx) {
-        if (sDoubleTapHooked.containsKey(view)) return;
-        sDoubleTapHooked.put(view, Boolean.TRUE);
-
-        final android.view.GestureDetector detector = new android.view.GestureDetector(ctx,
+    private static android.view.GestureDetector detectorFor(final View view) {
+        android.view.GestureDetector cached = sDoubleTapDetectors.get(view);
+        if (cached != null) return cached;
+        Context ctx = view.getContext();
+        if (ctx == null) return null;
+        if (!ModuleSettings.isDoubleTapFullscreenEnabled(ctx)) return null;
+        android.view.GestureDetector d = new android.view.GestureDetector(ctx,
                 new android.view.GestureDetector.SimpleOnGestureListener() {
                     @Override
                     public boolean onDoubleTap(android.view.MotionEvent e) {
@@ -329,15 +343,9 @@ public class MoreBubbleHookModule extends XposedModule {
                         }
                     }
                 });
-
-        view.setOnTouchListener(new View.OnTouchListener() {
-            @Override
-            public boolean onTouch(View v, android.view.MotionEvent event) {
-                // 双击才消费事件；其它一律放行，保证官方点击/拖拽逻辑不受影响
-                return detector.onTouchEvent(event);
-            }
-        });
-        Log.i(TAG, "double-tap fullscreen attached to BubbleExpandedView");
+        sDoubleTapDetectors.put(view, d);
+        Log.i(TAG, "double-tap detector created for BubbleExpandedView");
+        return d;
     }
 
     /**
