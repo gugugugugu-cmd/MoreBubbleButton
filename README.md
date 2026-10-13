@@ -51,6 +51,14 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 
 打开 MoreBubbleButton 应用 → 调整开关和按钮位置。
 
+### 方式五：应用气泡图标双击转全屏
+
+展开经典 BubbleStackView 小窗后，双击小窗上方的**同一个应用气泡图标**，通过系统官方转换路径将该气泡的现有任务转为全屏；不是双击小窗内的应用内容，也不会重新启动应用首页。
+
+开启 `bubble_double_tap_fullscreen`（默认开启）时，单击图标会等待系统双击超时，然后执行一次原生点击（收起/切换）。拖动、长按、取消手势不触发转换；不同图标不组成双击。关闭设置后恢复即时原生点击；待处理单击会在下一次事件或超时检查时安全收尾，图标移除时取消。此 Hook 按已核验的 SystemUI DEX 定位，其他 ROM/版本可能不兼容。
+
+日志区分 `attempted`、`official transition entered` 和 `official transition enqueued`；方法返回/转场入队不等于视觉完成，需在设备上验证。
+
 ## 设置项
 
 | 设置 | 说明 | 默认值 |
