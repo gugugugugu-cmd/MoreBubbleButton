@@ -83,8 +83,8 @@ fun SettingsScreen() {
                 )
                 HorizontalDivider()
                 SwitchPreferenceRow(
-                    title = "双击气泡全屏",
-                    subtitle = "双击气泡小窗顶部，直接转为全屏显示",
+                    title = "双击气泡图标打开应用",
+                    subtitle = "双击同一个应用气泡图标，像桌面图标一样正常打开应用；不保留气泡内的具体页面",
                     checked = doubleTapFullscreenEnabled,
                     onCheckedChange = {
                         doubleTapFullscreenEnabled = it

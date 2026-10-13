@@ -1,6 +1,10 @@
 package com.floatwindow.morebubblebutton;
 
-import android.app.TaskInfo;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.pm.LauncherActivityInfo;
+import android.content.pm.LauncherApps;
+import android.os.UserHandle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -25,7 +29,6 @@ final class BubbleIconDoubleTap {
     // Values must not strongly reference their weak keys, listeners, bubbles or views.
     private final Map<Object, PendingClick> pending = new WeakHashMap<>();
     private final Map<Object, Touch> touches = new WeakHashMap<>();
-    private final ThreadLocal<Attempt> conversion = new ThreadLocal<>();
     private Method clickMethod;
     private Class<?> clickClass;
     private Class<?> touchClass;
@@ -73,7 +76,6 @@ final class BubbleIconDoubleTap {
             });
             Log.i(TAG, "icon double-tap hooks installed: $6.onClick(View), $7 classId=0 touch");
         } catch (Throwable t) { Log.e(TAG, "icon double-tap unavailable; official clicks retained", t); }
-        installTransitionObserver(cl);
     }
 
     private Object scopedStack(Object listener, Class<?> expected, String field) throws Exception {
@@ -121,8 +123,9 @@ final class BubbleIconDoubleTap {
                 && secondTime >= old.when
                 && secondTime - old.when <= ViewConfiguration.getDoubleTapTimeout()) {
             old.clear();
-            if (!convert(stack, bubble, icon)) {
-                // Validation failed before invoking conversion: retain one official single click.
+            Log.i(TAG, "icon double tap recognized");
+            if (!launchApp(stack, bubble, icon)) {
+                // No successful launch request: retain one official single click.
                 replayOriginal(listener, icon);
             }
             return true;
@@ -137,7 +140,7 @@ final class BubbleIconDoubleTap {
             next.clear();
             return false;
         }
-        Log.d(TAG, "icon single click deferred by system double-tap timeout");
+        Log.i(TAG, "icon single click deferred by system double-tap timeout");
         return true;
     }
 
@@ -192,7 +195,7 @@ final class BubbleIconDoubleTap {
         try {
             // API 101 inspected with javap: ORIGIN bypasses interception, no saved Chain.
             module.getInvoker(clickMethod).setType(XposedInterface.Invoker.Type.ORIGIN).invoke(listener, icon);
-            Log.d(TAG, "icon official single click replayed once");
+            Log.i(TAG, "icon official single click replayed once");
         } catch (Throwable t) { Log.e(TAG, "icon original single click replay failed", t); }
     }
 
@@ -246,68 +249,58 @@ final class BubbleIconDoubleTap {
         @Override public void onViewDetachedFromWindow(View view) { clear(); }
     }
 
-    private boolean convert(Object stack, Object bubble, View icon) {
-        Attempt attempt = null;
+    private boolean launchApp(Object stack, Object bubble, View icon) {
         try {
-            if (!enabled(icon) || clickedBubble(stack, icon) != bubble || !icon.isAttachedToWindow()) return false;
-            Object wrapper = read(bubble, "mBubbleTaskView");
-            if (wrapper == null) throw new IllegalStateException("clicked Bubble has no task view yet");
-            Object taskView = read(wrapper, "taskView");
-            Object controller = read(taskView, "mTaskViewController");
-            Object taskController = read(taskView, "mTaskViewTaskController");
-            Object info = read(taskController, "mTaskInfo");
-            if (!(info instanceof TaskInfo) || ((TaskInfo) info).taskId < 0
-                    || read(info, "token") == null) {
-                throw new IllegalStateException("clicked Bubble task info/token not ready");
+            if (!enabled(icon) || clickedBubble(stack, icon) != bubble || !icon.isAttachedToWindow()) {
+                throw new IllegalStateException("clicked icon target invalidated");
             }
-            int taskId = ((TaskInfo) info).taskId;
-            Object data = read(stack, "mBubbleData");
-            Object matched = method(data.getClass(), "getBubbleInStackWithTaskId", int.class).invoke(data, taskId);
-            Object owner = read(controller, "this$0");
-            if (matched != bubble || read(owner, "mBubbleData") != data
-                    || ((Number) read(bubble, "mTaskId")).intValue() != taskId) {
-                throw new IllegalStateException("clicked Bubble does not own current taskId=" + taskId);
+            // Verified in target SystemUI DEX (81i4aezl): app constructor assigns
+            // Intent.getPackage() -> mPackageName and its UserHandle argument -> mUser.
+            // Never derive user from process/current user, taskId, key or PendingIntent.
+            Object packageValue = read(bubble, "mPackageName");
+            Object userValue = read(bubble, "mUser");
+            if (!(packageValue instanceof String) || ((String) packageValue).trim().isEmpty()
+                    || !(userValue instanceof UserHandle)) {
+                throw new IllegalStateException("clicked Bubble package/user unavailable");
             }
-            Method move = method(controller.getClass(), "moveTaskViewToFullscreen", taskController.getClass());
-            attempt = new Attempt(bubble, taskId);
-            conversion.set(attempt);
-            Log.i(TAG, "icon fullscreen attempted taskId=" + taskId);
-            move.invoke(controller, taskController);
-            Log.i(TAG, "icon fullscreen invocation returned; transitionEnqueued=" + attempt.enqueued
-                    + "; visual completion NOT verified");
-            return true; // Never replay collapse after an invocation which may have started conversion.
-        } catch (Throwable t) {
-            Log.w(TAG, "icon fullscreen " + (attempt == null ? "validation rejected" : "invocation failed")
-                    + "; visual completion NOT verified", t);
-            return attempt != null; // Fail closed after side effects may already have begun.
-        } finally { conversion.remove(); }
-    }
-
-    private static final class Attempt {
-        final Object bubble;
-        final int taskId;
-        boolean enqueued;
-        Attempt(Object bubble, int taskId) { this.bubble = bubble; this.taskId = taskId; }
-    }
-
-    private void installTransitionObserver(ClassLoader cl) {
-        try {
-            Class<?> transitions = cl.loadClass("com.android.wm.shell.bubbles.transitions.BubbleTransitions");
-            Method start = method(transitions, "startConvertFromBubble", bubbleClass, TaskInfo.class);
-            module.hook(start).intercept(chain -> {
-                Attempt attempt = conversion.get();
-                boolean ours = attempt != null && chain.getArg(0) == attempt.bubble
-                        && ((TaskInfo) chain.getArg(1)).taskId == attempt.taskId;
-                if (ours) Log.i(TAG, "icon fullscreen official transition entered taskId=" + attempt.taskId);
-                Object result = chain.proceed();
-                if (ours) {
-                    attempt.enqueued = true;
-                    Log.i(TAG, "icon fullscreen official transition enqueued taskId=" + attempt.taskId
-                            + "; visual completion NOT verified");
+            String packageName = (String) packageValue;
+            UserHandle user = (UserHandle) userValue;
+            int userId = ((Number) method(UserHandle.class, "getIdentifier").invoke(user)).intValue();
+            if (userId < 0) throw new IllegalStateException("special/unknown Bubble user rejected");
+            Log.i(TAG, "icon launch target resolved package=" + packageName + " user=" + userId);
+            Context context = icon.getContext();
+            LauncherApps launcher = context.getSystemService(LauncherApps.class);
+            if (launcher == null) throw new IllegalStateException("LauncherApps unavailable");
+            // getActivityList resolves ACTION_MAIN/CATEGORY_LAUNCHER for this exact user,
+            // including work profiles. No current-user fallback on permission/profile errors.
+            List<LauncherActivityInfo> activities = launcher.getActivityList(packageName, user);
+            ComponentName target = null;
+            if (activities != null) {
+                for (LauncherActivityInfo activity : activities) {
+                    if (activity == null || !user.equals(activity.getUser())) continue;
+                    ComponentName component = activity.getComponentName();
+                    if (component != null && packageName.equals(component.getPackageName())) {
+                        target = component;
+                        break; // Use the first ordinary launcher entry, not the Bubble's deep link.
+                    }
                 }
-                return result;
-            });
-        } catch (Throwable t) { Log.w(TAG, "icon fullscreen transition observation unavailable", t); }
+            }
+            if (target == null) throw new IllegalStateException("no MAIN/LAUNCHER activity for Bubble user");
+            if (!enabled(icon) || clickedBubble(stack, icon) != bubble || !icon.isAttachedToWindow()
+                    || !packageName.equals(read(bubble, "mPackageName"))
+                    || !user.equals(read(bubble, "mUser"))) {
+                throw new IllegalStateException("Bubble target changed during launcher resolution");
+            }
+            launcher.startMainActivity(target, user, null, null);
+            Log.i(TAG, "icon launch request submitted package=" + packageName + " user=" + userId
+                    + " component=" + target.flattenToShortString() + "; visual completion NOT verified");
+            // Do not collapse/dismiss/remove the Bubble: no unverified stack side effects.
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "icon launch resolution/request failed; original single-click fallback"
+                    + "; visual completion NOT verified", t);
+            return false;
+        }
     }
 
     // Missing field/method is an explicit compatibility error, distinct from a present null.
