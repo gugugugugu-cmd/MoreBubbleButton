@@ -22,6 +22,7 @@ fun SettingsScreen() {
     var menuEnabled by remember { mutableStateOf(ModuleSettings.isMenuEnabled(ctx)) }
     var actionBarEnabled by remember { mutableStateOf(ModuleSettings.isActionBarEnabled(ctx)) }
     var systemUiBubbleEnabled by remember { mutableStateOf(ModuleSettings.isSystemUiBubbleEnabled(ctx)) }
+    var doubleTapFullscreenEnabled by remember { mutableStateOf(ModuleSettings.isDoubleTapFullscreenEnabled(ctx)) }
     var positionMode by remember { mutableIntStateOf(ModuleSettings.getPositionMode(ctx)) }
     var sliderX by remember { mutableFloatStateOf(ModuleSettings.getPosX(ctx).toFloat()) }
     var sliderY by remember { mutableFloatStateOf(ModuleSettings.getPosY(ctx).toFloat()) }
@@ -78,6 +79,16 @@ fun SettingsScreen() {
                     onCheckedChange = {
                         systemUiBubbleEnabled = it
                         ModuleSettings.setSystemUiBubbleEnabled(ctx, it)
+                    }
+                )
+                HorizontalDivider()
+                SwitchPreferenceRow(
+                    title = "双击气泡全屏",
+                    subtitle = "双击气泡小窗顶部，直接转为全屏显示",
+                    checked = doubleTapFullscreenEnabled,
+                    onCheckedChange = {
+                        doubleTapFullscreenEnabled = it
+                        ModuleSettings.setDoubleTapFullscreenEnabled(ctx, it)
                     }
                 )
             }

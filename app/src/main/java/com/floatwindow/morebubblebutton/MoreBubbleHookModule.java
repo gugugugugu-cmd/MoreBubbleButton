@@ -21,6 +21,8 @@ import android.widget.LinearLayout;
 import android.widget.Toast;
 
 import java.lang.reflect.Method;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -270,7 +272,104 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "Hooked BubbleExpandedView.updateManageButtonIfExists (hide manage btn) OK");
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
 
+        // 8. 双击气泡小窗 -> 全屏展开
+        //    BubbleExpandedView 是 LinearLayout，顶部就是原来「管理」按钮所在的标题区
+        //    （该按钮已被上面的 hook 隐藏，区域空着，挂手势不冲突）。
+        //    触发走官方 TaskViewController.moveTaskViewToFullscreen：
+        //      mTaskView.mTaskViewController.moveTaskViewToFullscreen(
+        //          mTaskView.mTaskViewTaskController)
+        //    → BubbleController$BubbleTaskViewController 内部
+        //      getBubbleInStackWithTaskId(taskInfo.taskId) → BubbleTransitions.startConvertFromBubble
+        //    该实现里 bubble==null 时直接 return，不会抛异常，安全。
+        try {
+            Class<?> bevCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleExpandedView");
+            hook(bevCls.getMethod("onFinishInflate")).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    Object bev = chain.getThisObject();
+                    if (bev instanceof View) {
+                        Context ctx = ((View) bev).getContext();
+                        if (ctx != null && ModuleSettings.isDoubleTapFullscreenEnabled(ctx)) {
+                            installDoubleTapFullscreen((View) bev, ctx);
+                        }
+                    }
+                } catch (Throwable t) { Log.w(TAG, "install double tap: " + t.getMessage()); }
+                return result;
+            });
+            Log.i(TAG, "Hooked BubbleExpandedView.onFinishInflate (double tap fullscreen) OK");
+        } catch (Throwable t) { Log.e(TAG, "Hook double tap fullscreen: " + t.getMessage()); }
+
         Log.i(TAG, "All SystemUI hooks installed");
+    }
+
+    /** 已挂双击手势的 BubbleExpandedView（幂等） */
+    private static final Map<Object, Boolean> sDoubleTapHooked =
+            Collections.synchronizedMap(new IdentityHashMap<>());
+
+    /**
+     * 给气泡小窗挂双击 -> 全屏。
+     * 用 GestureDetector 的 onDoubleTap，装在视图本身上：
+     * 单击/滑动等其它手势照常冒泡给官方逻辑，双击才拦截。
+     */
+    private static void installDoubleTapFullscreen(final View view, Context ctx) {
+        if (sDoubleTapHooked.containsKey(view)) return;
+        sDoubleTapHooked.put(view, Boolean.TRUE);
+
+        final android.view.GestureDetector detector = new android.view.GestureDetector(ctx,
+                new android.view.GestureDetector.SimpleOnGestureListener() {
+                    @Override
+                    public boolean onDoubleTap(android.view.MotionEvent e) {
+                        try {
+                            Log.i(TAG, "double tap detected -> expand to fullscreen");
+                            expandBubbleViewToFullscreen(view);
+                            return true;
+                        } catch (Throwable t) {
+                            Log.w(TAG, "double tap expand failed: " + t.getMessage());
+                            return false;
+                        }
+                    }
+                });
+
+        view.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, android.view.MotionEvent event) {
+                // 双击才消费事件；其它一律放行，保证官方点击/拖拽逻辑不受影响
+                return detector.onTouchEvent(event);
+            }
+        });
+        Log.i(TAG, "double-tap fullscreen attached to BubbleExpandedView");
+    }
+
+    /**
+     * 触发官方「气泡转全屏」：TaskViewController.moveTaskViewToFullscreen(TaskViewTaskController)
+     * 字段链：BubbleExpandedView.mTaskView → TaskView
+     *         TaskView.mTaskViewController      (TaskViewController 接口)
+     *         TaskView.mTaskViewTaskController  (TaskViewTaskController)
+     */
+    private static void expandBubbleViewToFullscreen(View expandedView) {
+        Object taskView = getFieldSystemUi(expandedView, "mTaskView");
+        if (taskView == null) { Log.w(TAG, "fullscreen: mTaskView is null"); return; }
+        Object vc = getFieldSystemUi(taskView, "mTaskViewController");
+        Object tvtc = getFieldSystemUi(taskView, "mTaskViewTaskController");
+        if (vc == null || tvtc == null) {
+            Log.w(TAG, "fullscreen: vc=" + vc + " tvtc=" + tvtc);
+            return;
+        }
+        try {
+            // mTaskViewController 的编译期类型是接口，运行时是 BubbleController$BubbleTaskViewController，
+            // 按名称+参数兼容匹配，避免硬编码实现类
+            Method m = findCompatibleMethodByName(
+                    vc.getClass(), "moveTaskViewToFullscreen", tvtc.getClass());
+            if (m == null) {
+                for (Class<?> itf : vc.getClass().getInterfaces()) {
+                    m = findCompatibleMethodByName(itf, "moveTaskViewToFullscreen", tvtc.getClass());
+                    if (m != null) break;
+                }
+            }
+            if (m == null) { Log.w(TAG, "fullscreen: moveTaskViewToFullscreen not found"); return; }
+            m.invoke(vc, tvtc);
+            Log.i(TAG, "moveTaskViewToFullscreen invoked OK");
+        } catch (Throwable t) { Log.e(TAG, "moveTaskViewToFullscreen: " + t.getMessage()); }
     }
 
     private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {
