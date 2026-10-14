@@ -312,7 +312,7 @@ final class BubbleIconDoubleTap {
             transitionEntered.set(Boolean.FALSE);
             conversionAttempt.set(Boolean.TRUE);
             Log.i(TAG, "icon fullscreen official conversion attempted taskId=" + taskId);
-            method(controller, "moveTaskViewToFullscreen", taskController.getClass()).invoke(controller, taskController);
+            method(controller.getClass(), "moveTaskViewToFullscreen", taskController.getClass()).invoke(controller, taskController);
             Log.i(TAG, "icon fullscreen official conversion invocation returned taskId=" + taskId
                     + "; visual completion NOT verified");
             // If the observer is installed, require synchronous transition entry; otherwise setup was not verifiable.
