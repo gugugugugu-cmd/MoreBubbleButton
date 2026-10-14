@@ -51,13 +51,13 @@ Xposed 模块，为 Pixel Launcher 最近任务界面和 SystemUI 通知中心�
 
 打开 MoreBubbleButton 应用 → 调整开关和按钮位置。
 
-### 方式五：双击应用气泡图标正常打开应用
+### 方式五：双击应用气泡图标转为全屏
 
-展开经典 BubbleStackView 小窗后，双击小窗上方的**同一个应用气泡图标**，像点击桌面启动器图标一样正常打开对应应用。不是双击小窗内的应用内容；不转换气泡任务，不保留气泡内的具体页面，应用最终页面由应用自身的普通启动行为决定。
+展开经典 BubbleStackView 小窗后，双击小窗上方的**同一个应用气泡图标**，优先让 SystemUI 将当前气泡任务正式转换为全屏。若官方转换路径无法尝试或未同步进入，再像点击桌面启动器图标一样启动对应应用。不是双击小窗内的应用内容；官方转换保留气泡内当前页面，启动器回退则由应用自身决定最终页面。
 
 兼容保留 `bubble_double_tap_fullscreen` 设置键（默认开启）。单击图标仍等待系统双击超时，然后执行一次原生点击（收起/切换）。拖动、长按、取消手势不启动应用；不同图标不组成双击。关闭设置后恢复即时原生点击；待处理单击会在下一次事件或超时检查时安全收尾，图标移除时取消。
 
-目标 SystemUI DEX（MT 工作区 `81i4aezl`）核验了应用气泡构造函数将 `Intent.getPackage()` 写入 `mPackageName`、将传入的 `UserHandle` 写入 `mUser`。使用点击图标对应 Bubble 的这两个值，通过 `LauncherApps.getActivityList` 解析该用户的 MAIN/LAUNCHER 入口，再调用 `startMainActivity`。个人用户和工作资料均使用原始用户，不会在资料不可用/权限不足时改开另一个用户的同名应用。包名/用户缺失、特殊用户、无启动入口或启动请求抛异常时记录失败并回退一次原生单击；不使用气泡 PendingIntent，不清除或移除气泡，也不额外收起气泡栈。
+目标 SystemUI DEX（MT 工作区 `81i4aezl`）核验了双击的首选路径：点击图标对应 Bubble 的 `mBubbleTaskView.taskView`，取其 `mTaskViewController` 与 `mTaskViewTaskController`，在任务信息有效时调用 `moveTaskViewToFullscreen(TaskViewTaskController)`，由 SystemUI 正式启动气泡到全屏的转换。仅当官方转换无法建立/调用，或同步转换入口未进入时，才使用启动器回退：应用气泡构造函数将 `Intent.getPackage()` 写入 `mPackageName`、将传入的 `UserHandle` 写入 `mUser`，再通过 `LauncherApps.getActivityList` 解析该用户的 MAIN/LAUNCHER 入口并调用 `startMainActivity`。个人用户和工作资料均使用原始用户，不会在资料不可用/权限不足时改开另一个用户的同名应用。两条路径都不使用气泡 PendingIntent，不清除或移除气泡，也不额外收起气泡栈。
 
 `MoreBubbleModule` 的正常可见日志包含 Hook 安装、单击延迟、`icon double tap recognized`、包名/用户解析、`icon launch request submitted` 或失败。未出现双击日志时可先检查 Hook/手势是否进入。启动请求返回不等于视觉完成；DEX 核验及 CI 桩测试也不是设备运行验证。其他 ROM/版本可能不兼容，最终效果需设备验证。
 

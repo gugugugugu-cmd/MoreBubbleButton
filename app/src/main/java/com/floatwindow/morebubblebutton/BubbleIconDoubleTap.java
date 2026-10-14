@@ -33,6 +33,10 @@ final class BubbleIconDoubleTap {
     private Class<?> clickClass;
     private Class<?> touchClass;
     private Class<?> bubbleClass;
+    private boolean transitionObserverInstalled;
+    private final ThreadLocal<Boolean> conversionAttempt = new ThreadLocal<>();
+    private final ThreadLocal<Integer> transitionTaskId = new ThreadLocal<>();
+    private final ThreadLocal<Boolean> transitionEntered = new ThreadLocal<>();
 
     BubbleIconDoubleTap(MoreBubbleHookModule module) { this.module = module; }
 
@@ -42,6 +46,7 @@ final class BubbleIconDoubleTap {
             touchClass = cl.loadClass("com.android.wm.shell.bubbles.BubbleStackView$7");
             bubbleClass = cl.loadClass("com.android.wm.shell.bubbles.Bubble");
             clickMethod = method(clickClass, "onClick", View.class);
+            installTransitionObserver(cl);
             // onTouch is declared on RelativeTouchListener: scope its receiver precisely.
             Method touchMethod = method(touchClass, "onTouch", View.class, MotionEvent.class);
             module.hook(touchMethod).intercept(chain -> {
@@ -124,9 +129,12 @@ final class BubbleIconDoubleTap {
                 && secondTime - old.when <= ViewConfiguration.getDoubleTapTimeout()) {
             old.clear();
             Log.i(TAG, "icon double tap recognized");
-            if (!launchApp(stack, bubble, icon)) {
-                // No successful launch request: retain one official single click.
-                replayOriginal(listener, icon);
+            // Prefer the SystemUI-owned conversion; launcher startup is compatibility fallback only.
+            if (!convertToFullscreen(stack, bubble, icon)) {
+                if (!launchApp(stack, bubble, icon)) {
+                    // Neither conversion nor launcher request was possible: retain one official single click.
+                    replayOriginal(listener, icon);
+                }
             }
             return true;
         }
@@ -247,6 +255,82 @@ final class BubbleIconDoubleTap {
         @Override public void run() { replay(); }
         @Override public void onViewAttachedToWindow(View view) { }
         @Override public void onViewDetachedFromWindow(View view) { clear(); }
+    }
+
+    /** Hooks the transition entry point only for diagnostics; conversion itself remains SystemUI-owned. */
+    private void installTransitionObserver(ClassLoader cl) {
+        try {
+            Class<?> transitions = cl.loadClass("com.android.wm.shell.bubbles.BubbleTransitions");
+            Method start = null;
+            for (Method candidate : transitions.getDeclaredMethods()) {
+                if ("startConvertFromBubble".equals(candidate.getName()) && candidate.getParameterTypes().length == 2) {
+                    start = candidate; break;
+                }
+            }
+            if (start == null) throw new NoSuchMethodException("BubbleTransitions.startConvertFromBubble");
+            start.setAccessible(true);
+            module.hook(start).intercept(chain -> {
+                Integer taskId = transitionTaskId.get();
+                if (Boolean.TRUE.equals(conversionAttempt.get()) && taskId != null) {
+                    transitionEntered.set(Boolean.TRUE);
+                    Log.i(TAG, "icon fullscreen official transition entered taskId=" + taskId);
+                }
+                return chain.proceed();
+            });
+            transitionObserverInstalled = true;
+        } catch (Throwable t) {
+            // Observer is optional and must never disable the official conversion path.
+            Log.w(TAG, "icon fullscreen transition observer unavailable", t);
+        }
+    }
+
+    private boolean convertToFullscreen(Object stack, Object bubble, View icon) {
+        boolean attempted = false;
+        int taskId = -1;
+        try {
+            if (!enabled(icon) || clickedBubble(stack, icon) != bubble || !icon.isAttachedToWindow())
+                throw new IllegalStateException("clicked icon target invalidated");
+            Object bubbleTaskView = read(bubble, "mBubbleTaskView");
+            Object taskView = read(bubbleTaskView, "taskView");
+            Object controller = read(taskView, "mTaskViewController");
+            Object taskController = read(taskView, "mTaskViewTaskController");
+            Object info = read(taskController, "mTaskInfo");
+            if (info == null) throw new IllegalStateException("Bubble task info unavailable");
+            taskId = ((Number) read(info, "taskId")).intValue();
+            if (taskId < 0) throw new IllegalStateException("invalid Bubble task id");
+            attempted = true;
+            // Diagnostic only: official getter follows live task-view listener IDs; never inspect raw mTaskId.
+            try {
+                Object data = read(stack, "mBubbleData");
+                Method getter = method(data.getClass(), "getBubbleInStackWithTaskId", int.class);
+                Object match = getter.invoke(data, taskId);
+                Log.i(TAG, "icon fullscreen bubble lookup taskId=" + taskId + " matched=" + (match != null));
+            } catch (Throwable diagnostic) {
+                Log.w(TAG, "icon fullscreen bubble lookup diagnostic unavailable taskId=" + taskId, diagnostic);
+            }
+            transitionTaskId.set(taskId);
+            transitionEntered.set(Boolean.FALSE);
+            conversionAttempt.set(Boolean.TRUE);
+            Log.i(TAG, "icon fullscreen official conversion attempted taskId=" + taskId);
+            method(controller, "moveTaskViewToFullscreen", taskController).invoke(controller, taskController);
+            Log.i(TAG, "icon fullscreen official conversion invocation returned taskId=" + taskId
+                    + "; visual completion NOT verified");
+            // If the observer is installed, require synchronous transition entry; otherwise setup was not verifiable.
+            if (transitionObserverInstalled && !Boolean.TRUE.equals(transitionEntered.get())) {
+                Log.w(TAG, "icon fullscreen official transition not entered synchronously taskId=" + taskId
+                        + "; launcher fallback");
+                return false;
+            }
+            return true;
+        } catch (Throwable t) {
+            if (attempted) Log.w(TAG, "icon fullscreen official conversion failed taskId=" + taskId
+                    + "; launcher fallback", t);
+            else Log.w(TAG, "icon fullscreen official conversion setup unavailable; launcher fallback", t);
+            return false;
+        } finally {
+            conversionAttempt.remove();
+            transitionTaskId.remove();
+        }
     }
 
     private boolean launchApp(Object stack, Object bubble, View icon) {

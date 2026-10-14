@@ -9,12 +9,12 @@ assert 'new BubbleIconDoubleTap(this).install(cl)' in main
 for required in ['read(stack, field) == listener', '"$r8$classId"', 'read(bubble, "mIconView") == icon',
                  'ViewConfiguration.getDoubleTapTimeout()', 'Invoker.Type.ORIGIN',
                  'new Handler(view.getHandler().getLooper())', 'launcher.getActivityList(packageName, user)', 'launcher.startMainActivity(target, user, null, null)',
-                 'onViewDetachedFromWindow', 'icon double tap recognized', 'icon launch target resolved', 'icon launch request submitted', 'throw new NoSuchFieldException']:
+                 'onViewDetachedFromWindow', 'icon double tap recognized', 'icon launch target resolved', 'icon launch request submitted', 'mBubbleTaskView', 'moveTaskViewToFullscreen', 'startConvertFromBubble', 'icon fullscreen official conversion attempted', 'throw new NoSuchFieldException']:
     assert required in s, required
-for forbidden in ['moveTaskViewToFullscreen', 'startConvertFromBubble', 'installTransitionObserver', 'mBubbleTaskView', 'PendingIntent', 'TaskInfo']:
+for forbidden in ['read(bubble, "mTaskId")', 'PendingIntent']:
     assert forbidden not in s.replace('// Never derive user from process/current user, taskId, key or PendingIntent.', ''), forbidden
 assert 'setOnTouchListener' not in s and 'dispatchTouchEvent' not in s
-assert 'Chain ' not in s and 'chain' not in s[s.index('private final class PendingClick'):s.index('private boolean launchApp')]
+assert 'Chain ' not in s and 'chain' not in s[s.index('private final class PendingClick'):s.index('private void installTransitionObserver')]
 assert 'KEY_BUBBLE_DOUBLE_TAP_FULLSCREEN, true' in (SRC / 'ModuleSettings.java').read_text()
 print('PASS: source invariants (not device/runtime testing)')
 if '--java' not in sys.argv:
