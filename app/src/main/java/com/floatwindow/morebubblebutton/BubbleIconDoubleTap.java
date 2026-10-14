@@ -16,6 +16,7 @@ import android.view.ViewConfiguration;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
@@ -29,6 +30,10 @@ final class BubbleIconDoubleTap {
     // Values must not strongly reference their weak keys, listeners, bubbles or views.
     private final Map<Object, PendingClick> pending = new WeakHashMap<>();
     private final Map<Object, Touch> touches = new WeakHashMap<>();
+    // One-shot marker used by the SystemUI dismiss hook to avoid tearing down
+    // the TaskView before the official fullscreen handoff has rendered.
+    private static final Map<String, Long> officialConversions = new HashMap<>();
+    private static final long CLEANUP_GRACE_MS = 220L;
     private Method clickMethod;
     private Class<?> clickClass;
     private Class<?> touchClass;
@@ -97,6 +102,28 @@ final class BubbleIconDoubleTap {
             if (bubbleClass.isInstance(bubble) && read(bubble, "mIconView") == icon) return bubble;
         }
         return null; // Overflow and unrelated views are not application bubble icons.
+    }
+
+    static void markOfficialConversion(String key) {
+        if (key == null) return;
+        synchronized (officialConversions) {
+            officialConversions.put(key, SystemClock.uptimeMillis());
+        }
+    }
+
+    static boolean consumeRecentOfficialConversion(String key) {
+        if (key == null) return false;
+        synchronized (officialConversions) {
+            Long at = officialConversions.get(key);
+            if (at == null) return false;
+            long age = SystemClock.uptimeMillis() - at;
+            if (age < 0 || age > CLEANUP_GRACE_MS) {
+                officialConversions.remove(key);
+                return false;
+            }
+            officialConversions.remove(key);
+            return true;
+        }
     }
 
     private boolean enabled(View icon) {
@@ -319,6 +346,10 @@ final class BubbleIconDoubleTap {
             // moveTaskViewToFullscreen() only submits an asynchronous Shell transition.  The
             // observer is diagnostic and must never turn a successfully submitted official
             // conversion into a second LauncherApps startup path.
+            try {
+                Object key = read(bubble, "mKey");
+                if (key instanceof String) markOfficialConversion((String) key);
+            } catch (Throwable ignored) { }
             Log.i(TAG, "icon fullscreen official conversion submitted taskId=" + taskId
                     + "; launcher fallback disabled after submission");
             return true;

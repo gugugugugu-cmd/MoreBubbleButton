@@ -207,6 +207,23 @@ public class MoreBubbleHookModule extends XposedModule {
                         try {
                             int reason = (int) chain.getArg(0);
                             String key = (String) chain.getArg(keyArgIndex);
+                            if (reason == 3 && BubbleIconDoubleTap.consumeRecentOfficialConversion(key)) {
+                                Log.i(TAG, "defer fullscreen bubble cleanup reason=TASK_FINISHED key=" + key);
+                                Object owner = chain.getThisObject();
+                                final Method dismissMethod = dm;
+                                Object[] dismissArgs = new Object[dismissMethod.getParameterCount()];
+                                for (int i = 0; i < dismissArgs.length; i++) dismissArgs[i] = chain.getArg(i);
+                                final Object[] deferredArgs = dismissArgs;
+                                android.os.Handler h = new android.os.Handler(Looper.getMainLooper());
+                                h.postDelayed(() -> {
+                                    try {
+                                        dismissMethod.invoke(owner, deferredArgs);
+                                    } catch (Throwable t) {
+                                        Log.w(TAG, "deferred fullscreen bubble cleanup failed", t);
+                                    }
+                                }, 220L);
+                                return null;
+                            }
                             if ((reason == 4 || reason == 7 || reason == 14) && isRecentlyForcedBubble(key)) {
                                 Log.i(TAG, "keep forced bubble: skip dismiss reason=" + reason + " key=" + key);
                                 return null;
