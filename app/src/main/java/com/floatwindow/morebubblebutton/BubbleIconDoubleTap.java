@@ -260,7 +260,8 @@ final class BubbleIconDoubleTap {
     /** Hooks the transition entry point only for diagnostics; conversion itself remains SystemUI-owned. */
     private void installTransitionObserver(ClassLoader cl) {
         try {
-            Class<?> transitions = cl.loadClass("com.android.wm.shell.bubbles.BubbleTransitions");
+            // Android 17 stores BubbleTransitions in the transitions subpackage.
+            Class<?> transitions = cl.loadClass("com.android.wm.shell.bubbles.transitions.BubbleTransitions");
             Method start = null;
             for (Method candidate : transitions.getDeclaredMethods()) {
                 if ("startConvertFromBubble".equals(candidate.getName()) && candidate.getParameterTypes().length == 2) {
