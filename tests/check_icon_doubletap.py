@@ -18,6 +18,8 @@ for forbidden in ['read(bubble, "mTaskId")', 'PendingIntent']:
 assert 'setOnTouchListener' not in s and 'dispatchTouchEvent' not in s
 assert 'Chain ' not in s and 'chain' not in s[s.index('private final class PendingClick'):s.index('private void installTransitionObserver')]
 assert 'KEY_BUBBLE_DOUBLE_TAP_FULLSCREEN, true' in (SRC / 'ModuleSettings.java').read_text()
+assert 'BubbleOverflow' in main and 'getIconView' in main
+assert 'hide plus' in main
 print('PASS: source invariants (not device/runtime testing)')
 if '--java' not in sys.argv:
     sys.exit(0)

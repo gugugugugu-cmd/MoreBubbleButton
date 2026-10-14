@@ -287,7 +287,30 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "Hooked BubbleExpandedView.updateManageButtonIfExists (hide manage btn) OK");
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
 
-        // 8. Only the verified classic application bubble icon click path.
+        // 8. Hide Android 17 BubbleOverflow's adjacent "+" icon.
+        // BubbleOverflow.getIconView() returns its BadgedImageView overflow button;
+        // GONE removes both the glyph and its clickable/layout slot.
+        try {
+            Class<?> overflowCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleOverflow");
+            Method getOverflowIcon = findMethodSystemUi(overflowCls, "getIconView");
+            if (getOverflowIcon != null) {
+                hook(getOverflowIcon).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (result instanceof View) {
+                        View overflow = (View) result;
+                        overflow.setVisibility(View.GONE);
+                        overflow.setClickable(false);
+                        overflow.setEnabled(false);
+                    }
+                    return result;
+                });
+                Log.i(TAG, "Hooked BubbleOverflow.getIconView (hide plus) OK");
+            } else {
+                Log.w(TAG, "BubbleOverflow.getIconView not found");
+            }
+        } catch (Throwable t) { Log.w(TAG, "Hook BubbleOverflow plus: " + t.getMessage()); }
+
+        // 9. Only the verified classic application bubble icon click path.
         new BubbleIconDoubleTap(this).install(cl);
 
         Log.i(TAG, "All SystemUI hooks installed");
