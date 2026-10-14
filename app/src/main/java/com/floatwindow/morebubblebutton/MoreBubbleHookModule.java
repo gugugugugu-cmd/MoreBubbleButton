@@ -214,7 +214,10 @@ public class MoreBubbleHookModule extends XposedModule {
                                 Object[] dismissArgs = new Object[dismissMethod.getParameterCount()];
                                 for (int i = 0; i < dismissArgs.length; i++) dismissArgs[i] = chain.getArg(i);
                                 final Object[] deferredArgs = dismissArgs;
-                                android.os.Handler h = new android.os.Handler(Looper.getMainLooper());
+                                // BubbleData.dispatchPendingChanges touches PhysicsAnimationLayout, which
+                                // must run on the wmshell.main thread that created the bubble views.
+                                // The intercept itself runs on that thread, so use its Looper.
+                                android.os.Handler h = new android.os.Handler(Looper.myLooper());
                                 h.postDelayed(() -> {
                                     try {
                                         dismissMethod.invoke(owner, deferredArgs);
@@ -288,8 +291,11 @@ public class MoreBubbleHookModule extends XposedModule {
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
 
         // 8. Hide Android 17 BubbleOverflow's adjacent "+" icon.
-        // BubbleOverflow.getIconView() returns its BadgedImageView overflow button;
-        // GONE removes both the glyph and its clickable/layout slot.
+        // BubbleOverflow.getIconView() returns its overflow button; this view is
+        // re-inflated lazily on each call and re-added by several SystemUI paths,
+        // so hide it every time it is handed out (GONE + non-clickable + zero size).
+        // BubbleStackView.updateOverflowVisibility() re-sets it VISIBLE on every
+        // expand/collapse, so also force GONE after that official method runs.
         try {
             Class<?> overflowCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleOverflow");
             Method getOverflowIcon = findMethodSystemUi(overflowCls, "getIconView");
@@ -301,12 +307,36 @@ public class MoreBubbleHookModule extends XposedModule {
                         overflow.setVisibility(View.GONE);
                         overflow.setClickable(false);
                         overflow.setEnabled(false);
+                        if (overflow.getLayoutParams() != null) {
+                            overflow.getLayoutParams().width = 0;
+                            overflow.getLayoutParams().height = 0;
+                        }
                     }
                     return result;
                 });
                 Log.i(TAG, "Hooked BubbleOverflow.getIconView (hide plus) OK");
             } else {
                 Log.w(TAG, "BubbleOverflow.getIconView not found");
+            }
+            Class<?> stackCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleStackView");
+            Method updOverflow = findMethodSystemUi(stackCls, "updateOverflowVisibility");
+            if (updOverflow != null) {
+                hook(updOverflow).intercept(chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        Object overflow = getField(chain.getThisObject(), "mBubbleOverflow");
+                        if (overflow != null) {
+                            View btn = (View) getField(overflow, "overflowBtn");
+                            if (btn != null) {
+                                btn.setVisibility(View.GONE);
+                                btn.setClickable(false);
+                                btn.setEnabled(false);
+                            }
+                        }
+                    } catch (Throwable t) { Log.w(TAG, "updateOverflowVisibility hide plus: " + t.getMessage()); }
+                    return result;
+                });
+                Log.i(TAG, "Hooked BubbleStackView.updateOverflowVisibility (hide plus) OK");
             }
         } catch (Throwable t) { Log.w(TAG, "Hook BubbleOverflow plus: " + t.getMessage()); }
 
