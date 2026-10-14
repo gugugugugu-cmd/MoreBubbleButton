@@ -316,12 +316,11 @@ final class BubbleIconDoubleTap {
             method(controller.getClass(), "moveTaskViewToFullscreen", taskController.getClass()).invoke(controller, taskController);
             Log.i(TAG, "icon fullscreen official conversion invocation returned taskId=" + taskId
                     + "; visual completion NOT verified");
-            // If the observer is installed, require synchronous transition entry; otherwise setup was not verifiable.
-            if (transitionObserverInstalled && !Boolean.TRUE.equals(transitionEntered.get())) {
-                Log.w(TAG, "icon fullscreen official transition not entered synchronously taskId=" + taskId
-                        + "; launcher fallback", new IllegalStateException("transition hook did not observe entry"));
-                return false;
-            }
+            // moveTaskViewToFullscreen() only submits an asynchronous Shell transition.  The
+            // observer is diagnostic and must never turn a successfully submitted official
+            // conversion into a second LauncherApps startup path.
+            Log.i(TAG, "icon fullscreen official conversion submitted taskId=" + taskId
+                    + "; launcher fallback disabled after submission");
             return true;
         } catch (Throwable t) {
             if (attempted) Log.w(TAG, "icon fullscreen official conversion failed taskId=" + taskId

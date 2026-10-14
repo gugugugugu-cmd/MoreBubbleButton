@@ -9,8 +9,10 @@ assert 'new BubbleIconDoubleTap(this).install(cl)' in main
 for required in ['read(stack, field) == listener', '"$r8$classId"', 'read(bubble, "mIconView") == icon',
                  'ViewConfiguration.getDoubleTapTimeout()', 'Invoker.Type.ORIGIN',
                  'new Handler(view.getHandler().getLooper())', 'launcher.getActivityList(packageName, user)', 'launcher.startMainActivity(target, user, null, null)',
-                 'onViewDetachedFromWindow', 'icon double tap recognized', 'icon launch target resolved', 'icon launch request submitted', 'mBubbleTaskView', 'moveTaskViewToFullscreen', 'startConvertFromBubble', 'icon fullscreen official conversion attempted', 'throw new NoSuchFieldException']:
+                 'onViewDetachedFromWindow', 'icon double tap recognized', 'icon launch target resolved', 'icon launch request submitted', 'mBubbleTaskView', 'moveTaskViewToFullscreen', 'startConvertFromBubble', 'icon fullscreen official conversion attempted', 'icon fullscreen official conversion submitted', 'com.android.wm.shell.bubbles.transitions.BubbleTransitions', 'throw new NoSuchFieldException']:
     assert required in s, required
+assert 'com.android.wm.shell.bubbles.BubbleTransitions' not in s
+assert 'transitionObserverInstalled && !Boolean.TRUE.equals(transitionEntered.get())' not in s
 for forbidden in ['read(bubble, "mTaskId")', 'PendingIntent']:
     assert forbidden not in s.replace('// Never derive user from process/current user, taskId, key or PendingIntent.', ''), forbidden
 assert 'setOnTouchListener' not in s and 'dispatchTouchEvent' not in s
