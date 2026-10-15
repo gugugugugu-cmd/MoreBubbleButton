@@ -946,7 +946,7 @@ public class MoreBubbleHookModule extends XposedModule {
             if (target == null) throw new IllegalStateException("No launcher entry for Bubble user");
             launcher.startMainActivity(target, user, null, null);
             Log.i(TAG, "corner action: launcher start submitted package=" + packageName
-                    + " user=" + user.getIdentifier());
+                    + " user=" + userIdOf(user));
         } catch (Throwable t) {
             Log.w(TAG, "corner action: launcher start failed: " + t.getMessage(), t);
         }
