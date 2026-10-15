@@ -798,8 +798,8 @@ public class MoreBubbleHookModule extends XposedModule {
 
     /** Remove clones from either the expanded view or the manage button's parent. */
     private static void removeCornerButtonClones(Object expandedView, View manage) {
-        java.util.ArrayList<View> candidates = new java.util.ArrayList<>();
-        if (expandedView instanceof ViewGroup) candidates.add((View) expandedView);
+        java.util.ArrayList<ViewGroup> candidates = new java.util.ArrayList<>();
+        if (expandedView instanceof ViewGroup) candidates.add((ViewGroup) expandedView);
         if (manage != null && manage.getParent() instanceof ViewGroup) {
             ViewGroup parent = (ViewGroup) manage.getParent();
             if (!candidates.contains(parent)) candidates.add(parent);
