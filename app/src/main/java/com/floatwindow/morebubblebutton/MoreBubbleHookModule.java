@@ -808,12 +808,18 @@ public class MoreBubbleHookModule extends XposedModule {
                 for (View child : toRemove) ev.removeView(child);
             }
             // 左下角官方按钮：点击 = 收起小窗回到贴边列表（不删除气泡）。
+            if (manageButton instanceof android.widget.TextView) {
+                ((android.widget.TextView) manageButton).setText("关闭小窗");
+            }
             manageButton.setOnClickListener(v -> collapseBubbleExpandedView(expandedView));
             Log.i(TAG, "corner action: left manage button -> collapse stack");
 
             // 右侧克隆同款按钮：点击 = 该气泡任务全屏展开。
             View clone = cloneManageButton(manageButton);
             if (clone != null) {
+                if (clone instanceof android.widget.TextView) {
+                    ((android.widget.TextView) clone).setText("展开小窗");
+                }
                 clone.setOnClickListener(v -> expandBubbleFullscreen(expandedView));
                 LayoutParams cp = clone.getLayoutParams();
                 if (cp != null) { cp.width = manageButton.getLayoutParams() != null
@@ -897,6 +903,8 @@ public class MoreBubbleHookModule extends XposedModule {
                 }
             } catch (Throwable ignore) { }
             if (parent != null) parent.removeView(manage);
+            // 底部留白：让按钮整体再往下沉一点、贴近屏幕底缘（圆角导航区内侧）。
+            row.setPadding(0, 0, 0, (int) (20 * ctx.getResources().getDisplayMetrics().density));
             row.addView(manage, new LinearLayout.LayoutParams(
                     LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
             // 弹性空白占满中间，把左右两钮推到两端的对称位置。
@@ -918,14 +926,42 @@ public class MoreBubbleHookModule extends XposedModule {
 
     /** 关闭小窗：BubbleExpandedView.mStackView.mBubbleController.collapseStack()。 */
     private static void collapseBubbleExpandedView(Object expandedView) {
+        // 收起小窗 = BubbleData.setExpanded(false)：把展开的小窗收回到贴边气泡列表。
+        // BubbleStackView 在 Android 17 并没有直接的 mBubbleController 字段，改为用
+        // expandedView.mStackView.mBubbleData 这个在 smali 里确认存在的字段，直接调
+        // BubbleData.setExpanded(false)（官方收起展开窗的原子操作）。
         try {
+            // 主路径：经 mTaskViewController.this$0 拿到 BubbleController 后收起（官方收起展开窗）。
+            Object bubble = getField(expandedView, "mBubble");
+            Object bubbleTaskView = bubble != null ? getField(bubble, "mBubbleTaskView") : null;
+            Object taskView = bubbleTaskView != null ? getField(bubbleTaskView, "taskView") : null;
+            Object taskViewController = taskView != null ? getField(taskView, "mTaskViewController") : null;
+            Object collapse = null;
+            try {
+                // BubbleController 是 BubbleController$BubbleTaskViewController 的内部类，this$0 即 controller。
+                if (taskViewController != null) {
+                    Object controller = getField(taskViewController, "this$0");
+                    if (controller != null) {
+                        java.lang.reflect.Method m = findMethodSystemUi(controller.getClass(), "collapseStack");
+                        if (m != null) { m.invoke(controller); collapse = m; }
+                    }
+                }
+            } catch (Throwable ignored) { }
+            if (collapse != null) {
+                Log.i(TAG, "corner action: collapse stack invoked (controller)");
+                return;
+            }
+            // 备用：expandedView.mStackView.mBubbleData.setExpanded(false)（官方收起展开窗的原子状态）。
             Object stackView = getField(expandedView, "mStackView");
-            Object controller = stackView != null ? getField(stackView, "mBubbleController") : null;
-            java.lang.reflect.Method collapse = controller != null
-                    ? findMethodSystemUi(controller.getClass(), "collapseStack") : null;
-            if (collapse == null) throw new IllegalStateException("collapseStack() not found");
-            collapse.invoke(controller);
-            Log.i(TAG, "corner action: collapse stack invoked");
+            Object data = stackView != null ? getField(stackView, "mBubbleData") : null;
+            java.lang.reflect.Method setExpanded = data != null
+                    ? findMethod(data.getClass(), "setExpanded", boolean.class) : null;
+            if (setExpanded != null) {
+                setExpanded.invoke(data, false);
+                Log.i(TAG, "corner action: collapse stack invoked (BubbleData.setExpanded(false))");
+                return;
+            }
+            throw new IllegalStateException("no collapse entry available");
         } catch (Throwable t) {
             Log.w(TAG, "corner action: collapse stack failed: " + t.getMessage(), t);
         }
