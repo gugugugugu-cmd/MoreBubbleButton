@@ -62,6 +62,19 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
     private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
 
+    // Suppress only the transient edge plus created during Bubble -> fullscreen.
+    // The normal title-bar plus remains untouched outside this short window.
+    private static volatile long sSuppressEdgePlusUntil;
+    private static final long EDGE_PLUS_SUPPRESS_MS = 3500L;
+
+    private static void armEdgePlusSuppress() {
+        sSuppressEdgePlusUntil = SystemClock.uptimeMillis() + EDGE_PLUS_SUPPRESS_MS;
+    }
+
+    private static boolean suppressEdgePlusWindowActive() {
+        return SystemClock.uptimeMillis() < sSuppressEdgePlusUntil;
+    }
+
     // 全屏转换后延迟清理的守护状态：记录最近一次官方 moveTaskViewToFullscreen 提交的时间戳，
     // 供 dismissBubbleWithKey(reason=TASK_FINISHED) 判断是否为"转换后即将清理"并延迟执行。
     private static final Map<String, Long> officialConversions = new java.util.HashMap<>();
@@ -323,7 +336,83 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "Hooked BubbleExpandedView.updateManageButtonIfExists (corner buttons) OK");
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
 
+        // BubbleStackView can recreate and re-show the edge plus while the
+        // fullscreen transition is being committed. Keep the regular plus
+        // behavior outside the conversion window.
+        try {
+            Class<?> overflowCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleOverflow");
+            Method getIcon = findMethodSystemUi(overflowCls, "getIconView");
+            if (getIcon != null) {
+                hook(getIcon).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (suppressEdgePlusWindowActive() && result instanceof View) {
+                        hideEdgePlus((View) result);
+                    }
+                    return result;
+                });
+            }
+            Class<?> stackCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleStackView");
+            for (String name : new String[] {"updateOverflowVisibility", "updateOverflow"}) {
+                Method update = findMethodSystemUi(stackCls, name);
+                if (update != null) {
+                    hook(update).intercept(chain -> {
+                        Object result = chain.proceed();
+                        if (suppressEdgePlusWindowActive()) {
+                            hideEdgePlusFromStack(chain.getThisObject());
+                        }
+                        return result;
+                    });
+                }
+            }
+            Class<?> transition = cl.loadClass(
+                    "com.android.wm.shell.bubbles.transitions.BubbleTransitions$ConvertFromBubble");
+            Method startAnimation = findMethodByName(transition, "startAnimation");
+            if (startAnimation != null) {
+                hook(startAnimation).intercept(chain -> {
+                    armEdgePlusSuppress();
+                    return chain.proceed();
+                });
+            }
+            Log.i(TAG, "Hooked transient edge plus suppression during fullscreen");
+        } catch (Throwable t) {
+            Log.w(TAG, "Hook transient edge plus suppression: " + t.getMessage());
+        }
+
         Log.i(TAG, "All SystemUI hooks installed");
+    }
+
+    private static void hideEdgePlus(View button) {
+        button.setVisibility(View.GONE);
+        button.setClickable(false);
+        button.setEnabled(false);
+        if (button.getLayoutParams() != null) {
+            button.getLayoutParams().width = 0;
+            button.getLayoutParams().height = 0;
+        }
+    }
+
+    private static void hideEdgePlusFromStack(Object stack) {
+        try {
+            Object overflow = getField(stack, "mBubbleOverflow");
+            if (overflow != null) {
+                Object button = getField(overflow, "overflowBtn");
+                if (button instanceof View) hideEdgePlus((View) button);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "hide transient edge plus: " + t.getMessage());
+        }
+    }
+
+    private static Method findMethodByName(Class<?> type, String name) {
+        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
+            for (Method method : c.getDeclaredMethods()) {
+                if (name.equals(method.getName())) {
+                    method.setAccessible(true);
+                    return method;
+                }
+            }
+        }
+        return null;
     }
 
     private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {
@@ -855,6 +944,12 @@ public class MoreBubbleHookModule extends XposedModule {
                 }
                 lp.gravity = android.view.Gravity.END;
                 parent.addView(clone, lp);
+                // The clone is measured after insertion. Correct its baseline once
+                // the official button has a real laid-out position.
+                clone.post(() -> {
+                    int delta = manage.getTop() - clone.getTop();
+                    if (delta != 0) clone.setTranslationY(delta);
+                });
             }
         } catch (Throwable t) {
             Log.w(TAG, "corner action: add clone failed: " + t.getMessage(), t);
@@ -966,6 +1061,9 @@ public class MoreBubbleHookModule extends XposedModule {
                     "moveTaskViewToFullscreen", taskController.getClass());
             if (move == null) throw new NoSuchMethodException("moveTaskViewToFullscreen");
             move.invoke(controller, taskController);
+            // The edge bubble is rebuilt immediately after the handoff. Arm the
+            // suppression before that asynchronous rebuild can expose the plus.
+            armEdgePlusSuppress();
             try {
                 Object key = getField(bubble, "mKey");
                 if (key instanceof String) markOfficialConversion((String) key);
