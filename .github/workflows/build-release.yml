@@ -7,7 +7,7 @@ on:
   push:
     tags:                 # 推送 v* 标签时触发
       - 'v*'
-    branches: [master]
+    branches: [master, 'feature/**']
 
 permissions:
   contents: write         # 允许上传 artifact
