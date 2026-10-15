@@ -62,18 +62,6 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
     private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
 
-    // 全屏转换期间贴边会闪现 overflow 加号；用时间窗精准屏蔽，同时保留小窗标题栏加号的平时功能。
-    private static volatile long sSuppressEdgePlusUntil = 0L;
-    private static final long EDGE_PLUS_SUPPRESS_MS = 3000L;
-
-    private static void armEdgePlusSuppress() {
-        sSuppressEdgePlusUntil = SystemClock.uptimeMillis() + EDGE_PLUS_SUPPRESS_MS;
-    }
-
-    private static boolean suppressEdgePlusWindowActive() {
-        return SystemClock.uptimeMillis() < sSuppressEdgePlusUntil;
-    }
-
     // 全屏转换后延迟清理的守护状态：记录最近一次官方 moveTaskViewToFullscreen 提交的时间戳，
     // 供 dismissBubbleWithKey(reason=TASK_FINISHED) 判断是否为"转换后即将清理"并延迟执行。
     private static final Map<String, Long> officialConversions = new java.util.HashMap<>();
@@ -334,106 +322,6 @@ public class MoreBubbleHookModule extends XposedModule {
             });
             Log.i(TAG, "Hooked BubbleExpandedView.updateManageButtonIfExists (corner buttons) OK");
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
-
-        // 8. 全屏转换期间屏蔽贴边闪现的「加号」，同时保留小窗标题栏加号的平时功能。
-        //    该加号真身 = BubbleOverflow.overflowBtn。过去两处 hook 无条件 GONE，
-        //    把标题栏某处也会调 getIconView() 返回的加号一并屏蔽了（功能连带消失）。
-        //    现在只在 expandBubbleFullscreen 提交全屏转换后的 sSuppressEdgePlusUntil 时间窗内
-        //    强制 GONE，其余时间放行官方行为，从而让标题栏加号恢复可点。
-        try {
-            Class<?> overflowCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleOverflow");
-            Method getOverflowIcon = findMethodSystemUi(overflowCls, "getIconView");
-            if (getOverflowIcon != null) {
-                hook(getOverflowIcon).intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (result instanceof View) {
-                        View overflow = (View) result;
-                        if (suppressEdgePlusWindowActive()) {
-                            overflow.setVisibility(View.GONE);
-                            overflow.setClickable(false);
-                            overflow.setEnabled(false);
-                            if (overflow.getLayoutParams() != null) {
-                                overflow.getLayoutParams().width = 0;
-                                overflow.getLayoutParams().height = 0;
-                            }
-                        }
-                    }
-                    return result;
-                });
-                Log.i(TAG, "Hooked BubbleOverflow.getIconView (suppress edge plus during fullscreen) OK");
-            } else {
-                Log.w(TAG, "BubbleOverflow.getIconView not found");
-            }
-            Class<?> stackCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleStackView");
-            Method updOverflow = findMethodSystemUi(stackCls, "updateOverflowVisibility");
-            if (updOverflow != null) {
-                hook(updOverflow).intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (!suppressEdgePlusWindowActive()) return result;
-                    try {
-                        Object overflow = getField(chain.getThisObject(), "mBubbleOverflow");
-                        if (overflow != null) {
-                            View btn = (View) getField(overflow, "overflowBtn");
-                            if (btn != null) {
-                                btn.setVisibility(View.GONE);
-                                btn.setClickable(false);
-                                btn.setEnabled(false);
-                            }
-                        }
-                    } catch (Throwable t) { Log.w(TAG, "updateOverflowVisibility suppress edge plus: " + t.getMessage()); }
-                    return result;
-                });
-                Log.i(TAG, "Hooked BubbleStackView.updateOverflowVisibility (suppress edge plus during fullscreen) OK");
-            }
-            // updateOverflow() 会 getIconView() 懒加载 + 把加号 reorder 进 mBubbleContainer 并
-            // 调 updateOverflowVisibility() 把它置为 VISIBLE —— 这正是全屏转换后贴边闪现加号的来源。
-            Method updOv = findMethodSystemUi(stackCls, "updateOverflow");
-            if (updOv != null) {
-                hook(updOv).intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (!suppressEdgePlusWindowActive()) return result;
-                    try {
-                        Object overflow = getField(chain.getThisObject(), "mBubbleOverflow");
-                        if (overflow != null) {
-                            View btn = (View) getField(overflow, "overflowBtn");
-                            if (btn != null) {
-                                btn.setVisibility(View.GONE);
-                                btn.setClickable(false);
-                                btn.setEnabled(false);
-                            }
-                        }
-                    } catch (Throwable t) { Log.w(TAG, "updateOverflow suppress edge plus: " + t.getMessage()); }
-                    return result;
-                });
-                Log.i(TAG, "Hooked BubbleStackView.updateOverflow (suppress edge plus during fullscreen) OK");
-            }
-        } catch (Throwable t) { Log.w(TAG, "Hook BubbleOverflow plus: " + t.getMessage()); }
-
-        // 8b. 全屏转换动画真正开始时再刷新一次屏蔽时间窗。
-        //     仅靠 expandBubbleFullscreen 提交时刻起算，动画可能延迟几百毫秒才开始，
-        //     固定窗口会提前过期导致贴边加号在转换动画中闪现。这里以 ConvertFromBubble
-        //     的 startAnimation() 为锚，动画一开始就重新武装时间窗。
-        try {
-            Class<?> cfbCls = cl.loadClass(
-                    "com.android.wm.shell.bubbles.transitions.BubbleTransitions$ConvertFromBubble");
-            Class<?> transitionInfoCls = cl.loadClass("android.window.TransitionInfo");
-            Class<?> scTxnCls = cl.loadClass("android.view.SurfaceControl$Transaction");
-            Class<?> finishCbCls = cl.loadClass("com.android.wm.shell.transition.Transitions$TransitionFinishCallback");
-            Method startAnim = findMethodSystemUi(cfbCls, "startAnimation", android.os.IBinder.class,
-                    transitionInfoCls, scTxnCls, scTxnCls, android.os.IBinder.class, finishCbCls);
-            if (startAnim != null) {
-                hook(startAnim).intercept(chain -> {
-                    armEdgePlusSuppress();
-                    Log.i(TAG, "edge plus suppress armed on ConvertFromBubble.startAnimation");
-                    return chain.proceed();
-                });
-                Log.i(TAG, "Hooked BubbleTransitions$ConvertFromBubble.startAnimation OK");
-            } else {
-                Log.w(TAG, "ConvertFromBubble.startAnimation not found");
-            }
-        } catch (Throwable t) { Log.w(TAG, "Hook ConvertFromBubble startAnimation: " + t.getMessage()); }
-
-        // 9. (removed on this branch: 双击应用图标全屏展开不在本分支功能范围内)
 
         Log.i(TAG, "All SystemUI hooks installed");
     }
@@ -1051,8 +939,6 @@ public class MoreBubbleHookModule extends XposedModule {
                     "moveTaskViewToFullscreen", taskController.getClass());
             if (move == null) throw new NoSuchMethodException("moveTaskViewToFullscreen");
             move.invoke(controller, taskController);
-            // 全屏转换提交后：在贴边短暂显示出加号的窗口内屏蔽它，标题栏平时加号不受影响。
-            armEdgePlusSuppress();
             try {
                 Object key = getField(bubble, "mKey");
                 if (key instanceof String) markOfficialConversion((String) key);

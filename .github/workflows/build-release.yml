@@ -27,14 +27,6 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Verify icon double-tap logic (Android stubs)
-        run: |
-          if [ -f "app/src/main/java/com/floatwindow/morebubblebutton/BubbleIconDoubleTap.java" ]; then
-            python3 tests/check_icon_doubletap.py --java
-          else
-            echo "BubbleIconDoubleTap not present on this branch; skipping double-tap test"
-          fi
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
