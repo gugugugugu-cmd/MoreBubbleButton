@@ -385,6 +385,28 @@ public class MoreBubbleHookModule extends XposedModule {
                 });
                 Log.i(TAG, "Hooked BubbleStackView.updateOverflowVisibility (suppress edge plus during fullscreen) OK");
             }
+            // updateOverflow() 会 getIconView() 懒加载 + 把加号 reorder 进 mBubbleContainer 并
+            // 调 updateOverflowVisibility() 把它置为 VISIBLE —— 这正是全屏转换后贴边闪现加号的来源。
+            Method updOv = findMethodSystemUi(stackCls, "updateOverflow");
+            if (updOv != null) {
+                hook(updOv).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (!suppressEdgePlusWindowActive()) return result;
+                    try {
+                        Object overflow = getField(chain.getThisObject(), "mBubbleOverflow");
+                        if (overflow != null) {
+                            View btn = (View) getField(overflow, "overflowBtn");
+                            if (btn != null) {
+                                btn.setVisibility(View.GONE);
+                                btn.setClickable(false);
+                                btn.setEnabled(false);
+                            }
+                        }
+                    } catch (Throwable t) { Log.w(TAG, "updateOverflow suppress edge plus: " + t.getMessage()); }
+                    return result;
+                });
+                Log.i(TAG, "Hooked BubbleStackView.updateOverflow (suppress edge plus during fullscreen) OK");
+            }
         } catch (Throwable t) { Log.w(TAG, "Hook BubbleOverflow plus: " + t.getMessage()); }
 
         // 8b. 全屏转换动画真正开始时再刷新一次屏蔽时间窗。
@@ -830,10 +852,18 @@ public class MoreBubbleHookModule extends XposedModule {
 
     // ===== 气泡小窗底部「关闭 / 全屏」双按钮改造 (Android 17 BubbleExpandedView) =====
 
-    /** 标记已安装的双按钮横向容器，避免官方每次重建 mManageButton 时反复堆叠。 */
+    /** 标记我们克隆出来的右侧按钮，便于每次官方重建 mManageButton 时先清掉旧的克隆体。 */
     private static final int CORNER_ROW_TAG = 0x4d4f5245; // "MORE"
 
-    /** 让官方 mManageButton 本体点击收起小窗、在其右侧克隆同款按钮点击全屏展开。 */
+    /**
+     * 改造气泡小窗底部按钮：官方 mManageButton 留在原位（垂直 LinearLayout 的最后一个 child，
+     * 也就是左下角）只改文案与点击行为 = 「关闭小窗」；再克隆一颗同款按钮，用
+     * layout_gravity=end 挂在同一父容器里 = 右下角「展开小窗」。
+     *
+     * 关键：绝不把官方按钮搬离原父容器。官方 updateManageButtonIfExists 每次都会
+     * removeView+重新 inflate+addView，一旦我们把它移进自建容器，下一轮官方就把它摘走，
+     * 我们的容器里留下的是脱离视图树的旧实例 → 点击失效、行为错乱。
+     */
     private static void applyCornerButtonActions(Object expandedView, View manageButton) {
         try {
             // overflow 抽屉（"最近没有消息气泡"）也是一个 BubbleExpandedView，但它没有应用任务，
@@ -843,52 +873,76 @@ public class MoreBubbleHookModule extends XposedModule {
                 Log.i(TAG, "corner action: skip overflow drawer (no app task)");
                 return;
             }
-            // 已装好且容器仍挂在视图上：无需重复重建（官方会高频调用本方法）。
-            if (expandedView instanceof ViewGroup) {
-                ViewGroup ev0 = (ViewGroup) expandedView;
-                for (int i = 0; i < ev0.getChildCount(); i++) {
-                    if (Boolean.TRUE.equals(ev0.getChildAt(i).getTag(CORNER_ROW_TAG))) {
-                        return;
-                    }
-                }
-            }
-            // 官方每次重建 mManageButton 都会 addView，先清掉上一轮装好的双按钮容器，避免堆叠。
+            // 官方每次重建 mManageButton 都会 addView，先清掉上一轮装好的右侧克隆体，避免堆叠。
             if (expandedView instanceof ViewGroup) {
                 ViewGroup ev = (ViewGroup) expandedView;
                 List<View> toRemove = new java.util.ArrayList<>();
                 for (int i = 0; i < ev.getChildCount(); i++) {
                     View child = ev.getChildAt(i);
-                    Object tag = child.getTag(CORNER_ROW_TAG);
-                    if (Boolean.TRUE.equals(tag)) toRemove.add(child);
+                    if (Boolean.TRUE.equals(child.getTag(CORNER_ROW_TAG))) toRemove.add(child);
                 }
                 for (View child : toRemove) ev.removeView(child);
             }
-            // 左下角官方按钮：点击 = 收起小窗回到贴边列表（不删除气泡）。
+
+            // 官方按钮（左下角）：只改文案 + 重设点击 = 收起小窗回到贴边列表（不删除气泡）。
             if (manageButton instanceof android.widget.TextView) {
                 ((android.widget.TextView) manageButton).setText("关闭小窗");
             }
             manageButton.setOnClickListener(v -> collapseBubbleExpandedView(expandedView));
             Log.i(TAG, "corner action: left manage button -> collapse stack");
 
-            // 右侧克隆同款按钮：点击 = 该气泡任务全屏展开。
+            // 右侧克隆同款按钮（右下角）：点击 = 该气泡任务全屏展开。
             View clone = cloneManageButton(manageButton);
-            if (clone != null) {
-                if (clone instanceof android.widget.TextView) {
-                    ((android.widget.TextView) clone).setText("展开小窗");
-                }
-                clone.setOnClickListener(v -> expandBubbleFullscreen(expandedView));
-                LayoutParams cp = clone.getLayoutParams();
-                if (cp != null) { cp.width = manageButton.getLayoutParams() != null
-                        ? manageButton.getLayoutParams().width : LayoutParams.WRAP_CONTENT;
-                    cp.height = manageButton.getLayoutParams() != null
-                        ? manageButton.getLayoutParams().height : LayoutParams.WRAP_CONTENT; }
-                arrangeCornerButtons(expandedView, manageButton, clone);
-                Log.i(TAG, "corner action: cloned right button -> fullscreen");
-            } else {
+            if (clone == null) {
                 Log.w(TAG, "corner action: clone button failed; only collapse button installed");
+                return;
             }
+            if (clone instanceof android.widget.TextView) {
+                ((android.widget.TextView) clone).setText("展开小窗");
+            }
+            clone.setOnClickListener(v -> expandBubbleFullscreen(expandedView));
+            clone.setTag(CORNER_ROW_TAG, Boolean.TRUE);
+            addCloneBesideManageButton(expandedView, manageButton, clone);
+            Log.i(TAG, "corner action: cloned right button -> fullscreen");
         } catch (Throwable t) {
             Log.w(TAG, "corner action install failed: " + t.getMessage(), t);
+        }
+    }
+
+    /**
+     * 把克隆按钮加到官方按钮所在的同一个父容器（垂直 LinearLayout），用 layout_gravity=end
+     * 让它落在右端，从而与官方（gravity=start）形成底部左右对称，且不搬动官方按钮。
+     */
+    private static void addCloneBesideManageButton(Object expandedView, View manage, View clone) {
+        try {
+            ViewGroup parent = (manage.getParent() instanceof ViewGroup)
+                    ? (ViewGroup) manage.getParent()
+                    : (expandedView instanceof ViewGroup ? (ViewGroup) expandedView : null);
+            if (parent == null) {
+                Log.w(TAG, "corner action: no parent for clone; row not added");
+                return;
+            }
+            // 沿用官方按钮的尺寸/边距，只把水平对齐改成右端。
+            LayoutParams lp;
+            android.view.ViewGroup.LayoutParams mp = manage.getLayoutParams();
+            if (mp instanceof LinearLayout.LayoutParams) {
+                LinearLayout.LayoutParams mlp = (LinearLayout.LayoutParams) mp;
+                lp = new LinearLayout.LayoutParams(mlp.width, mlp.height);
+                ((LinearLayout.LayoutParams) lp).topMargin = mlp.topMargin;
+                ((LinearLayout.LayoutParams) lp).bottomMargin = mlp.bottomMargin;
+                ((LinearLayout.LayoutParams) lp).setMarginStart(mlp.getMarginStart());
+                ((LinearLayout.LayoutParams) lp).setMarginEnd(mlp.getMarginEnd());
+            } else if (mp != null) {
+                lp = new LayoutParams(mp.width, mp.height);
+            } else {
+                lp = new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
+            }
+            if (lp instanceof LinearLayout.LayoutParams) {
+                ((LinearLayout.LayoutParams) lp).gravity = android.view.Gravity.END;
+            }
+            parent.addView(clone, lp);
+        } catch (Throwable t) {
+            Log.w(TAG, "corner action: add clone failed: " + t.getMessage(), t);
         }
     }
 
@@ -937,46 +991,6 @@ public class MoreBubbleHookModule extends XposedModule {
         } catch (Throwable genericErr) {
             Log.w(TAG, "corner action: generic clone failed: " + genericErr.getMessage(), genericErr);
             return null;
-        }
-    }
-
-    /** 把两个按钮放进一个横向 LinearLayout 容器挂到 BubbleExpandedView 底部，保证一左一右。 */
-    private static void arrangeCornerButtons(Object expandedView, View manage, View clone) {
-        try {
-            Context ctx = manage.getContext();
-            ViewGroup parent = (ViewGroup) manage.getParent();
-            LinearLayout row = new LinearLayout(ctx);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-            // 官方管理按钮原在左下角：把它留在左边作为「关闭小窗」，
-            // 克隆按钮用弹性空白推到最右侧作为「全屏展开」，两钮对称于底部左右两端。
-            LayoutParams rlp = new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
-            try {
-                if (parent != null && parent.getLayoutParams() != null) {
-                    android.view.ViewGroup.LayoutParams orig = parent.getLayoutParams();
-                    rlp.width = orig.width;
-                    rlp.height = orig.height;
-                }
-            } catch (Throwable ignore) { }
-            if (parent != null) parent.removeView(manage);
-            // 底部留白：让按钮整体再往下沉一点、贴近屏幕底缘（圆角导航区内侧）。
-            row.setPadding(0, 0, 0, (int) (20 * ctx.getResources().getDisplayMetrics().density));
-            row.addView(manage, new LinearLayout.LayoutParams(
-                    LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
-            // 弹性空白占满中间，把左右两钮推到两端的对称位置。
-            View spacer = new View(ctx);
-            spacer.setLayoutParams(new LinearLayout.LayoutParams(0, 0, 1.0f));
-            row.addView(spacer);
-            row.addView(clone, new LinearLayout.LayoutParams(
-                    LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
-            if (expandedView instanceof ViewGroup) {
-                ((ViewGroup) expandedView).addView(row, rlp);
-                row.setTag(CORNER_ROW_TAG, Boolean.TRUE);
-            } else {
-                Log.w(TAG, "corner action: BubbleExpandedView is not a ViewGroup; row not added");
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "corner action: corner row arrange failed: " + t.getMessage(), t);
         }
     }
 
