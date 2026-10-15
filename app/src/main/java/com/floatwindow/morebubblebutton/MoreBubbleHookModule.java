@@ -754,22 +754,21 @@ public class MoreBubbleHookModule extends XposedModule {
      */
     private static void applyCornerButtonActions(Object expandedView, View manageButton) {
         try {
-            // overflow 抽屉（"最近没有消息气泡"）也是一个 BubbleExpandedView，但它没有应用任务，
-            // 「关闭小窗 / 展开小窗」在那上面没有意义，必须整段跳过。
+            // The official method can reuse the same BubbleExpandedView while switching
+            // between an app bubble and the overflow drawer. Remove stale clones first.
+            removeCornerButtonClones(expandedView, manageButton);
+
+            // The overflow drawer has no task to close or expand. mIsOverflow is the
+            // primary flag; getBubbleKey() and mBubble cover builds where that flag is
+            // not updated before updateManageButtonIfExists() runs.
             Object isOverflow = getField(expandedView, "mIsOverflow");
-            if (Boolean.TRUE.equals(isOverflow)) {
-                Log.i(TAG, "corner action: skip overflow drawer (no app task)");
+            Object bubble = getField(expandedView, "mBubble");
+            Object bubbleKey = invoke(expandedView, "getBubbleKey");
+            if (Boolean.TRUE.equals(isOverflow)
+                    || "Overflow".equals(bubbleKey)
+                    || bubble == null) {
+                Log.i(TAG, "corner action: skip overflow drawer");
                 return;
-            }
-            // 官方每次重建 mManageButton 都会 addView，先清掉上一轮装好的右侧克隆体，避免堆叠。
-            if (expandedView instanceof ViewGroup) {
-                ViewGroup ev = (ViewGroup) expandedView;
-                List<View> toRemove = new java.util.ArrayList<>();
-                for (int i = 0; i < ev.getChildCount(); i++) {
-                    View child = ev.getChildAt(i);
-                    if (Boolean.TRUE.equals(child.getTag(CORNER_ROW_TAG))) toRemove.add(child);
-                }
-                for (View child : toRemove) ev.removeView(child);
             }
 
             // 官方按钮（左下角）：只改文案 + 重设点击 = 收起小窗回到贴边列表（不删除气泡）。
@@ -797,38 +796,66 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
+    /** Remove clones from either the expanded view or the manage button's parent. */
+    private static void removeCornerButtonClones(Object expandedView, View manage) {
+        java.util.ArrayList<View> candidates = new java.util.ArrayList<>();
+        if (expandedView instanceof ViewGroup) candidates.add((View) expandedView);
+        if (manage != null && manage.getParent() instanceof ViewGroup) {
+            ViewGroup parent = (ViewGroup) manage.getParent();
+            if (!candidates.contains(parent)) candidates.add(parent);
+        }
+        for (ViewGroup group : candidates) {
+            java.util.ArrayList<View> remove = new java.util.ArrayList<>();
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View child = group.getChildAt(i);
+                if (Boolean.TRUE.equals(child.getTag(CORNER_ROW_TAG))) remove.add(child);
+            }
+            for (View child : remove) group.removeView(child);
+        }
+    }
+
     /**
-     * 把克隆按钮加到官方按钮所在的同一个父容器（垂直 LinearLayout），用 layout_gravity=end
-     * 让它落在右端，从而与官方（gravity=start）形成底部左右对称，且不搬动官方按钮。
+     * Add the clone to the same parent without increasing the vertical stack height.
+     * Android 17's parent is vertical, so a normal addView puts the clone on a new
+     * row and below the visible window. Overlaying the clone at the manage button's
+     * top and aligning it to END keeps both controls in the existing bottom row.
      */
     private static void addCloneBesideManageButton(Object expandedView, View manage, View clone) {
         try {
-            ViewGroup parent = (manage.getParent() instanceof ViewGroup)
+            ViewGroup parent = manage != null && manage.getParent() instanceof ViewGroup
                     ? (ViewGroup) manage.getParent()
                     : (expandedView instanceof ViewGroup ? (ViewGroup) expandedView : null);
             if (parent == null) {
                 Log.w(TAG, "corner action: no parent for clone; row not added");
                 return;
             }
-            // 沿用官方按钮的尺寸/边距，只把水平对齐改成右端。
-            LayoutParams lp;
-            android.view.ViewGroup.LayoutParams mp = manage.getLayoutParams();
-            if (mp instanceof LinearLayout.LayoutParams) {
-                LinearLayout.LayoutParams mlp = (LinearLayout.LayoutParams) mp;
-                lp = new LinearLayout.LayoutParams(mlp.width, mlp.height);
-                ((LinearLayout.LayoutParams) lp).topMargin = mlp.topMargin;
-                ((LinearLayout.LayoutParams) lp).bottomMargin = mlp.bottomMargin;
-                ((LinearLayout.LayoutParams) lp).setMarginStart(mlp.getMarginStart());
-                ((LinearLayout.LayoutParams) lp).setMarginEnd(mlp.getMarginEnd());
-            } else if (mp != null) {
-                lp = new LayoutParams(mp.width, mp.height);
+            android.view.ViewGroup.LayoutParams base = manage.getLayoutParams();
+            int width = base != null ? base.width : LayoutParams.WRAP_CONTENT;
+            int height = base != null ? base.height : LayoutParams.WRAP_CONTENT;
+            FrameLayout.LayoutParams overlay = new FrameLayout.LayoutParams(width, height,
+                    android.view.Gravity.END | android.view.Gravity.TOP);
+            int top = manage.getTop();
+            if (top > 0) overlay.topMargin = top;
+            overlay.setMarginEnd(base instanceof LinearLayout.LayoutParams
+                    ? ((LinearLayout.LayoutParams) base).getMarginEnd() : 0);
+            if (parent instanceof FrameLayout) {
+                parent.addView(clone, overlay);
             } else {
-                lp = new LinearLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
+                // A vertical LinearLayout cannot overlay children; use its existing
+                // height and pull the clone back onto the manage row.
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(width, height);
+                if (base instanceof LinearLayout.LayoutParams) {
+                    LinearLayout.LayoutParams mlp = (LinearLayout.LayoutParams) base;
+                    lp.setMarginStart(mlp.getMarginStart());
+                    lp.setMarginEnd(mlp.getMarginEnd());
+                    lp.bottomMargin = mlp.bottomMargin;
+                    lp.topMargin = -(height > 0 ? height : manage.getMeasuredHeight());
+                } else {
+                    lp.topMargin = -(height > 0 ? height : manage.getMeasuredHeight());
+                }
+                lp.gravity = android.view.Gravity.END;
+                parent.addView(clone, lp);
             }
-            if (lp instanceof LinearLayout.LayoutParams) {
-                ((LinearLayout.LayoutParams) lp).gravity = android.view.Gravity.END;
-            }
-            parent.addView(clone, lp);
         } catch (Throwable t) {
             Log.w(TAG, "corner action: add clone failed: " + t.getMessage(), t);
         }
