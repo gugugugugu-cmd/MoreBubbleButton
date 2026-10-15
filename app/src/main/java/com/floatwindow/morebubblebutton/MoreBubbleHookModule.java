@@ -6,11 +6,12 @@ import android.annotation.SuppressLint;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.LauncherActivityInfo;
+import android.content.pm.LauncherApps;
 import android.net.Uri;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
-import android.os.SystemClock;
 import android.os.UserHandle;
 import android.util.Log;
 import android.view.View;
@@ -62,45 +63,9 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
     private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
 
-    // Suppress only the transient edge plus created during Bubble -> fullscreen.
-    // The normal title-bar plus remains untouched outside this short window.
-    private static volatile long sSuppressEdgePlusUntil;
-    private static final long EDGE_PLUS_SUPPRESS_MS = 3500L;
-
-    private static void armEdgePlusSuppress() {
-        sSuppressEdgePlusUntil = SystemClock.uptimeMillis() + EDGE_PLUS_SUPPRESS_MS;
-    }
-
-    private static boolean suppressEdgePlusWindowActive() {
-        return SystemClock.uptimeMillis() < sSuppressEdgePlusUntil;
-    }
-
-    // 全屏转换后延迟清理的守护状态：记录最近一次官方 moveTaskViewToFullscreen 提交的时间戳，
-    // 供 dismissBubbleWithKey(reason=TASK_FINISHED) 判断是否为"转换后即将清理"并延迟执行。
-    private static final Map<String, Long> officialConversions = new java.util.HashMap<>();
-    private static final long CLEANUP_GRACE_MS = 300L;
-
-    static void markOfficialConversion(String key) {
-        if (key == null) return;
-        synchronized (officialConversions) {
-            officialConversions.put(key, SystemClock.uptimeMillis());
-        }
-    }
-
-    static boolean consumeRecentOfficialConversion(String key) {
-        if (key == null) return false;
-        synchronized (officialConversions) {
-            Long at = officialConversions.get(key);
-            if (at == null) return false;
-            long age = SystemClock.uptimeMillis() - at;
-            if (age < 0 || age > CLEANUP_GRACE_MS) {
-                officialConversions.remove(key);
-                return false;
-            }
-            officialConversions.remove(key);
-            return true;
-        }
-    }
+    // The right corner action launches the Bubble's application entry directly.
+    // No Bubble -> fullscreen transition is submitted, so SystemUI never rebuilds
+    // the edge bubble and its adjacent plus as a side effect.
 
     private void hookSystemUi(ClassLoader cl) {
         Log.i(TAG, "Hooking SystemUI...");
@@ -249,26 +214,6 @@ public class MoreBubbleHookModule extends XposedModule {
                         try {
                             int reason = (int) chain.getArg(0);
                             String key = (String) chain.getArg(keyArgIndex);
-                            if (reason == 3 && consumeRecentOfficialConversion(key)) {
-                                Log.i(TAG, "defer fullscreen bubble cleanup reason=TASK_FINISHED key=" + key);
-                                Object owner = chain.getThisObject();
-                                final Method dismissMethod = dm;
-                                Object[] dismissArgs = new Object[dismissMethod.getParameterCount()];
-                                for (int i = 0; i < dismissArgs.length; i++) dismissArgs[i] = chain.getArg(i);
-                                final Object[] deferredArgs = dismissArgs;
-                                // BubbleData.dispatchPendingChanges touches PhysicsAnimationLayout, which
-                                // must run on the wmshell.main thread that created the bubble views.
-                                // The intercept itself runs on that thread, so use its Looper.
-                                android.os.Handler h = new android.os.Handler(Looper.myLooper());
-                                h.postDelayed(() -> {
-                                    try {
-                                        dismissMethod.invoke(owner, deferredArgs);
-                                    } catch (Throwable t) {
-                                        Log.w(TAG, "deferred fullscreen bubble cleanup failed", t);
-                                    }
-                                }, 300L);
-                                return null;
-                            }
                             if ((reason == 4 || reason == 7 || reason == 14) && isRecentlyForcedBubble(key)) {
                                 Log.i(TAG, "keep forced bubble: skip dismiss reason=" + reason + " key=" + key);
                                 return null;
@@ -336,83 +281,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "Hooked BubbleExpandedView.updateManageButtonIfExists (corner buttons) OK");
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
 
-        // BubbleStackView can recreate and re-show the edge plus while the
-        // fullscreen transition is being committed. Keep the regular plus
-        // behavior outside the conversion window.
-        try {
-            Class<?> overflowCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleOverflow");
-            Method getIcon = findMethodSystemUi(overflowCls, "getIconView");
-            if (getIcon != null) {
-                hook(getIcon).intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (suppressEdgePlusWindowActive() && result instanceof View) {
-                        hideEdgePlus((View) result);
-                    }
-                    return result;
-                });
-            }
-            Class<?> stackCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleStackView");
-            for (String name : new String[] {"updateOverflowVisibility", "updateOverflow"}) {
-                Method update = findMethodSystemUi(stackCls, name);
-                if (update != null) {
-                    hook(update).intercept(chain -> {
-                        Object result = chain.proceed();
-                        if (suppressEdgePlusWindowActive()) {
-                            hideEdgePlusFromStack(chain.getThisObject());
-                        }
-                        return result;
-                    });
-                }
-            }
-            Class<?> transition = cl.loadClass(
-                    "com.android.wm.shell.bubbles.transitions.BubbleTransitions$ConvertFromBubble");
-            Method startAnimation = findMethodByName(transition, "startAnimation");
-            if (startAnimation != null) {
-                hook(startAnimation).intercept(chain -> {
-                    armEdgePlusSuppress();
-                    return chain.proceed();
-                });
-            }
-            Log.i(TAG, "Hooked transient edge plus suppression during fullscreen");
-        } catch (Throwable t) {
-            Log.w(TAG, "Hook transient edge plus suppression: " + t.getMessage());
-        }
-
         Log.i(TAG, "All SystemUI hooks installed");
-    }
-
-    private static void hideEdgePlus(View button) {
-        button.setVisibility(View.GONE);
-        button.setClickable(false);
-        button.setEnabled(false);
-        if (button.getLayoutParams() != null) {
-            button.getLayoutParams().width = 0;
-            button.getLayoutParams().height = 0;
-        }
-    }
-
-    private static void hideEdgePlusFromStack(Object stack) {
-        try {
-            Object overflow = getField(stack, "mBubbleOverflow");
-            if (overflow != null) {
-                Object button = getField(overflow, "overflowBtn");
-                if (button instanceof View) hideEdgePlus((View) button);
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "hide transient edge plus: " + t.getMessage());
-        }
-    }
-
-    private static Method findMethodByName(Class<?> type, String name) {
-        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
-            for (Method method : c.getDeclaredMethods()) {
-                if (name.equals(method.getName())) {
-                    method.setAccessible(true);
-                    return method;
-                }
-            }
-        }
-        return null;
     }
 
     private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {
@@ -876,7 +745,7 @@ public class MoreBubbleHookModule extends XposedModule {
             if (clone instanceof android.widget.TextView) {
                 ((android.widget.TextView) clone).setText("展开小窗");
             }
-            clone.setOnClickListener(v -> expandBubbleFullscreen(expandedView));
+            clone.setOnClickListener(v -> launchBubbleApp(expandedView));
             clone.setTag(CORNER_ROW_TAG, Boolean.TRUE);
             addCloneBesideManageButton(expandedView, manageButton, clone);
             Log.i(TAG, "corner action: cloned right button -> fullscreen");
@@ -1047,30 +916,39 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    /** 全屏展开：BubbleExpandedView.mBubble.mBubbleTaskView.taskView -> moveTaskViewToFullscreen。 */
-    private static void expandBubbleFullscreen(Object expandedView) {
+    /** Launch the Bubble's normal launcher entry for its exact user/profile. */
+    private static void launchBubbleApp(Object expandedView) {
         try {
             Object bubble = getField(expandedView, "mBubble");
-            Object bubbleTaskView = bubble != null ? getField(bubble, "mBubbleTaskView") : null;
-            Object taskView = bubbleTaskView != null ? getField(bubbleTaskView, "taskView") : null;
-            Object controller = taskView != null ? getField(taskView, "mTaskViewController") : null;
-            Object taskController = controller != null ? getField(taskView, "mTaskViewTaskController") : null;
-            if (controller == null || taskController == null)
-                throw new IllegalStateException("Bubble task view controller unavailable");
-            java.lang.reflect.Method move = findMethod(controller.getClass(),
-                    "moveTaskViewToFullscreen", taskController.getClass());
-            if (move == null) throw new NoSuchMethodException("moveTaskViewToFullscreen");
-            move.invoke(controller, taskController);
-            // The edge bubble is rebuilt immediately after the handoff. Arm the
-            // suppression before that asynchronous rebuild can expose the plus.
-            armEdgePlusSuppress();
-            try {
-                Object key = getField(bubble, "mKey");
-                if (key instanceof String) markOfficialConversion((String) key);
-            } catch (Throwable ignored) { }
-            Log.i(TAG, "corner action: fullscreen expansion submitted");
+            Object packageValue = bubble != null ? getField(bubble, "mPackageName") : null;
+            Object userValue = bubble != null ? getField(bubble, "mUser") : null;
+            if (!(packageValue instanceof String) || ((String) packageValue).trim().isEmpty()
+                    || !(userValue instanceof UserHandle)) {
+                throw new IllegalStateException("Bubble package/user unavailable");
+            }
+            String packageName = (String) packageValue;
+            UserHandle user = (UserHandle) userValue;
+            LauncherApps launcher = ((View) expandedView).getContext()
+                    .getSystemService(LauncherApps.class);
+            if (launcher == null) throw new IllegalStateException("LauncherApps unavailable");
+            List<LauncherActivityInfo> activities = launcher.getActivityList(packageName, user);
+            ComponentName target = null;
+            if (activities != null) {
+                for (LauncherActivityInfo activity : activities) {
+                    if (activity == null || !user.equals(activity.getUser())) continue;
+                    ComponentName component = activity.getComponentName();
+                    if (component != null && packageName.equals(component.getPackageName())) {
+                        target = component;
+                        break;
+                    }
+                }
+            }
+            if (target == null) throw new IllegalStateException("No launcher entry for Bubble user");
+            launcher.startMainActivity(target, user, null, null);
+            Log.i(TAG, "corner action: launcher start submitted package=" + packageName
+                    + " user=" + user.getIdentifier());
         } catch (Throwable t) {
-            Log.w(TAG, "corner action: fullscreen expansion failed: " + t.getMessage(), t);
+            Log.w(TAG, "corner action: launcher start failed: " + t.getMessage(), t);
         }
     }
 
