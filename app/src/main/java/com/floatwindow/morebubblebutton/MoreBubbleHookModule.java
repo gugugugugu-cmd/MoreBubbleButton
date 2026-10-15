@@ -323,7 +323,54 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "Hooked BubbleExpandedView.updateManageButtonIfExists (corner buttons) OK");
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
 
-        // 8. (removed on this branch: 屏蔽"加号" 按钮不在本分支功能范围内)
+        // 8. 屏蔽气泡栏「加号」图标 — 全屏展开后贴边位置不能闪现加号。
+        //    该加号真身 = BubbleOverflow.overflowBtn，getIconView() 每次调用都会
+        //    懒加载 re-inflate 新按钮，且 updateOverflowVisibility() 每次展开/收起都会
+        //    把它 setVisibility(VISIBLE)，所以两处都要 hook，强制 GONE + 禁点击 + 零尺寸。
+        try {
+            Class<?> overflowCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleOverflow");
+            Method getOverflowIcon = findMethodSystemUi(overflowCls, "getIconView");
+            if (getOverflowIcon != null) {
+                hook(getOverflowIcon).intercept(chain -> {
+                    Object result = chain.proceed();
+                    if (result instanceof View) {
+                        View overflow = (View) result;
+                        overflow.setVisibility(View.GONE);
+                        overflow.setClickable(false);
+                        overflow.setEnabled(false);
+                        if (overflow.getLayoutParams() != null) {
+                            overflow.getLayoutParams().width = 0;
+                            overflow.getLayoutParams().height = 0;
+                        }
+                    }
+                    return result;
+                });
+                Log.i(TAG, "Hooked BubbleOverflow.getIconView (hide plus) OK");
+            } else {
+                Log.w(TAG, "BubbleOverflow.getIconView not found");
+            }
+            Class<?> stackCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleStackView");
+            Method updOverflow = findMethodSystemUi(stackCls, "updateOverflowVisibility");
+            if (updOverflow != null) {
+                hook(updOverflow).intercept(chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        Object overflow = getField(chain.getThisObject(), "mBubbleOverflow");
+                        if (overflow != null) {
+                            View btn = (View) getField(overflow, "overflowBtn");
+                            if (btn != null) {
+                                btn.setVisibility(View.GONE);
+                                btn.setClickable(false);
+                                btn.setEnabled(false);
+                            }
+                        }
+                    } catch (Throwable t) { Log.w(TAG, "updateOverflowVisibility hide plus: " + t.getMessage()); }
+                    return result;
+                });
+                Log.i(TAG, "Hooked BubbleStackView.updateOverflowVisibility (hide plus) OK");
+            }
+        } catch (Throwable t) { Log.w(TAG, "Hook BubbleOverflow plus: " + t.getMessage()); }
+
         // 9. (removed on this branch: 双击应用图标全屏展开不在本分支功能范围内)
 
         Log.i(TAG, "All SystemUI hooks installed");
@@ -838,8 +885,9 @@ public class MoreBubbleHookModule extends XposedModule {
             ViewGroup parent = (ViewGroup) manage.getParent();
             LinearLayout row = new LinearLayout(ctx);
             row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(android.view.Gravity.END | android.view.Gravity.CENTER_VERTICAL);
-            // 继承官方管理按钮原容器底部方向：官方把它放左下，克隆按钮放其右侧。
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            // 官方管理按钮原在左下角：把它留在左边作为「关闭小窗」，
+            // 克隆按钮用弹性空白推到最右侧作为「全屏展开」，两钮对称于底部左右两端。
             LayoutParams rlp = new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
             try {
                 if (parent != null && parent.getLayoutParams() != null) {
@@ -851,11 +899,14 @@ public class MoreBubbleHookModule extends XposedModule {
             if (parent != null) parent.removeView(manage);
             row.addView(manage, new LinearLayout.LayoutParams(
                     LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
+            // 弹性空白占满中间，把左右两钮推到两端的对称位置。
+            View spacer = new View(ctx);
+            spacer.setLayoutParams(new LinearLayout.LayoutParams(0, 0, 1.0f));
+            row.addView(spacer);
             row.addView(clone, new LinearLayout.LayoutParams(
                     LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
-            Object thisObj = expandedView;
-            if (thisObj instanceof ViewGroup) {
-                ((ViewGroup) thisObj).addView(row, rlp);
+            if (expandedView instanceof ViewGroup) {
+                ((ViewGroup) expandedView).addView(row, rlp);
                 row.setTag(CORNER_ROW_TAG, Boolean.TRUE);
             } else {
                 Log.w(TAG, "corner action: BubbleExpandedView is not a ViewGroup; row not added");
