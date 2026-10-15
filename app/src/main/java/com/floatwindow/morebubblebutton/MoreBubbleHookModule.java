@@ -62,6 +62,18 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
     private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
 
+    // 全屏转换期间贴边会闪现 overflow 加号；用时间窗精准屏蔽，同时保留小窗标题栏加号的平时功能。
+    private static volatile long sSuppressEdgePlusUntil = 0L;
+    private static final long EDGE_PLUS_SUPPRESS_MS = 2000L;
+
+    private static void armEdgePlusSuppress() {
+        sSuppressEdgePlusUntil = SystemClock.uptimeMillis() + EDGE_PLUS_SUPPRESS_MS;
+    }
+
+    private static boolean suppressEdgePlusWindowActive() {
+        return SystemClock.uptimeMillis() < sSuppressEdgePlusUntil;
+    }
+
     // 全屏转换后延迟清理的守护状态：记录最近一次官方 moveTaskViewToFullscreen 提交的时间戳，
     // 供 dismissBubbleWithKey(reason=TASK_FINISHED) 判断是否为"转换后即将清理"并延迟执行。
     private static final Map<String, Long> officialConversions = new java.util.HashMap<>();
@@ -323,10 +335,11 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "Hooked BubbleExpandedView.updateManageButtonIfExists (corner buttons) OK");
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
 
-        // 8. 屏蔽气泡栏「加号」图标 — 全屏展开后贴边位置不能闪现加号。
-        //    该加号真身 = BubbleOverflow.overflowBtn，getIconView() 每次调用都会
-        //    懒加载 re-inflate 新按钮，且 updateOverflowVisibility() 每次展开/收起都会
-        //    把它 setVisibility(VISIBLE)，所以两处都要 hook，强制 GONE + 禁点击 + 零尺寸。
+        // 8. 全屏转换期间屏蔽贴边闪现的「加号」，同时保留小窗标题栏加号的平时功能。
+        //    该加号真身 = BubbleOverflow.overflowBtn。过去两处 hook 无条件 GONE，
+        //    把标题栏某处也会调 getIconView() 返回的加号一并屏蔽了（功能连带消失）。
+        //    现在只在 expandBubbleFullscreen 提交全屏转换后的 sSuppressEdgePlusUntil 时间窗内
+        //    强制 GONE，其余时间放行官方行为，从而让标题栏加号恢复可点。
         try {
             Class<?> overflowCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleOverflow");
             Method getOverflowIcon = findMethodSystemUi(overflowCls, "getIconView");
@@ -335,17 +348,19 @@ public class MoreBubbleHookModule extends XposedModule {
                     Object result = chain.proceed();
                     if (result instanceof View) {
                         View overflow = (View) result;
-                        overflow.setVisibility(View.GONE);
-                        overflow.setClickable(false);
-                        overflow.setEnabled(false);
-                        if (overflow.getLayoutParams() != null) {
-                            overflow.getLayoutParams().width = 0;
-                            overflow.getLayoutParams().height = 0;
+                        if (suppressEdgePlusWindowActive()) {
+                            overflow.setVisibility(View.GONE);
+                            overflow.setClickable(false);
+                            overflow.setEnabled(false);
+                            if (overflow.getLayoutParams() != null) {
+                                overflow.getLayoutParams().width = 0;
+                                overflow.getLayoutParams().height = 0;
+                            }
                         }
                     }
                     return result;
                 });
-                Log.i(TAG, "Hooked BubbleOverflow.getIconView (hide plus) OK");
+                Log.i(TAG, "Hooked BubbleOverflow.getIconView (suppress edge plus during fullscreen) OK");
             } else {
                 Log.w(TAG, "BubbleOverflow.getIconView not found");
             }
@@ -354,6 +369,7 @@ public class MoreBubbleHookModule extends XposedModule {
             if (updOverflow != null) {
                 hook(updOverflow).intercept(chain -> {
                     Object result = chain.proceed();
+                    if (!suppressEdgePlusWindowActive()) return result;
                     try {
                         Object overflow = getField(chain.getThisObject(), "mBubbleOverflow");
                         if (overflow != null) {
@@ -364,10 +380,10 @@ public class MoreBubbleHookModule extends XposedModule {
                                 btn.setEnabled(false);
                             }
                         }
-                    } catch (Throwable t) { Log.w(TAG, "updateOverflowVisibility hide plus: " + t.getMessage()); }
+                    } catch (Throwable t) { Log.w(TAG, "updateOverflowVisibility suppress edge plus: " + t.getMessage()); }
                     return result;
                 });
-                Log.i(TAG, "Hooked BubbleStackView.updateOverflowVisibility (hide plus) OK");
+                Log.i(TAG, "Hooked BubbleStackView.updateOverflowVisibility (suppress edge plus during fullscreen) OK");
             }
         } catch (Throwable t) { Log.w(TAG, "Hook BubbleOverflow plus: " + t.getMessage()); }
 
@@ -981,6 +997,8 @@ public class MoreBubbleHookModule extends XposedModule {
                     "moveTaskViewToFullscreen", taskController.getClass());
             if (move == null) throw new NoSuchMethodException("moveTaskViewToFullscreen");
             move.invoke(controller, taskController);
+            // 全屏转换提交后：在贴边短暂显示出加号的窗口内屏蔽它，标题栏平时加号不受影响。
+            armEdgePlusSuppress();
             try {
                 Object key = getField(bubble, "mKey");
                 if (key instanceof String) markOfficialConversion((String) key);
