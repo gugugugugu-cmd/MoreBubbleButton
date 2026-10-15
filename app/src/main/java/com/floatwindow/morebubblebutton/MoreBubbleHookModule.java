@@ -64,7 +64,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
     // 全屏转换期间贴边会闪现 overflow 加号；用时间窗精准屏蔽，同时保留小窗标题栏加号的平时功能。
     private static volatile long sSuppressEdgePlusUntil = 0L;
-    private static final long EDGE_PLUS_SUPPRESS_MS = 2000L;
+    private static final long EDGE_PLUS_SUPPRESS_MS = 3000L;
 
     private static void armEdgePlusSuppress() {
         sSuppressEdgePlusUntil = SystemClock.uptimeMillis() + EDGE_PLUS_SUPPRESS_MS;
@@ -386,6 +386,30 @@ public class MoreBubbleHookModule extends XposedModule {
                 Log.i(TAG, "Hooked BubbleStackView.updateOverflowVisibility (suppress edge plus during fullscreen) OK");
             }
         } catch (Throwable t) { Log.w(TAG, "Hook BubbleOverflow plus: " + t.getMessage()); }
+
+        // 8b. 全屏转换动画真正开始时再刷新一次屏蔽时间窗。
+        //     仅靠 expandBubbleFullscreen 提交时刻起算，动画可能延迟几百毫秒才开始，
+        //     固定窗口会提前过期导致贴边加号在转换动画中闪现。这里以 ConvertFromBubble
+        //     的 startAnimation() 为锚，动画一开始就重新武装时间窗。
+        try {
+            Class<?> cfbCls = cl.loadClass(
+                    "com.android.wm.shell.bubbles.transitions.BubbleTransitions$ConvertFromBubble");
+            Class<?> transitionInfoCls = cl.loadClass("android.window.TransitionInfo");
+            Class<?> scTxnCls = cl.loadClass("android.view.SurfaceControl$Transaction");
+            Class<?> finishCbCls = cl.loadClass("com.android.wm.shell.transition.Transitions$TransitionFinishCallback");
+            Method startAnim = findMethodSystemUi(cfbCls, "startAnimation", android.os.IBinder.class,
+                    transitionInfoCls, scTxnCls, scTxnCls, android.os.IBinder.class, finishCbCls);
+            if (startAnim != null) {
+                hook(startAnim).intercept(chain -> {
+                    armEdgePlusSuppress();
+                    Log.i(TAG, "edge plus suppress armed on ConvertFromBubble.startAnimation");
+                    return chain.proceed();
+                });
+                Log.i(TAG, "Hooked BubbleTransitions$ConvertFromBubble.startAnimation OK");
+            } else {
+                Log.w(TAG, "ConvertFromBubble.startAnimation not found");
+            }
+        } catch (Throwable t) { Log.w(TAG, "Hook ConvertFromBubble startAnimation: " + t.getMessage()); }
 
         // 9. (removed on this branch: 双击应用图标全屏展开不在本分支功能范围内)
 
@@ -812,6 +836,22 @@ public class MoreBubbleHookModule extends XposedModule {
     /** 让官方 mManageButton 本体点击收起小窗、在其右侧克隆同款按钮点击全屏展开。 */
     private static void applyCornerButtonActions(Object expandedView, View manageButton) {
         try {
+            // overflow 抽屉（"最近没有消息气泡"）也是一个 BubbleExpandedView，但它没有应用任务，
+            // 「关闭小窗 / 展开小窗」在那上面没有意义，必须整段跳过。
+            Object isOverflow = getField(expandedView, "mIsOverflow");
+            if (Boolean.TRUE.equals(isOverflow)) {
+                Log.i(TAG, "corner action: skip overflow drawer (no app task)");
+                return;
+            }
+            // 已装好且容器仍挂在视图上：无需重复重建（官方会高频调用本方法）。
+            if (expandedView instanceof ViewGroup) {
+                ViewGroup ev0 = (ViewGroup) expandedView;
+                for (int i = 0; i < ev0.getChildCount(); i++) {
+                    if (Boolean.TRUE.equals(ev0.getChildAt(i).getTag(CORNER_ROW_TAG))) {
+                        return;
+                    }
+                }
+            }
             // 官方每次重建 mManageButton 都会 addView，先清掉上一轮装好的双按钮容器，避免堆叠。
             if (expandedView instanceof ViewGroup) {
                 ViewGroup ev = (ViewGroup) expandedView;
