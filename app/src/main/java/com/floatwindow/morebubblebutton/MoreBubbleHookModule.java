@@ -916,9 +916,15 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    /** Launch the Bubble's normal launcher entry for its exact user/profile. */
+    private static volatile long sLastCornerLaunchAt;
+
+    /** Collapse the embedded bubble first, then launch its exact user/profile entry. */
     private static void launchBubbleApp(Object expandedView) {
         try {
+            long now = android.os.SystemClock.uptimeMillis();
+            if (now - sLastCornerLaunchAt < 800L) return;
+            sLastCornerLaunchAt = now;
+
             Object bubble = getField(expandedView, "mBubble");
             Object packageValue = bubble != null ? getField(bubble, "mPackageName") : null;
             Object userValue = bubble != null ? getField(bubble, "mUser") : null;
@@ -944,9 +950,23 @@ public class MoreBubbleHookModule extends XposedModule {
                 }
             }
             if (target == null) throw new IllegalStateException("No launcher entry for Bubble user");
-            launcher.startMainActivity(target, user, null, null);
-            Log.i(TAG, "corner action: launcher start submitted package=" + packageName
-                    + " user=" + userIdOf(user));
+
+            // LauncherApps accepts the request while the app is still embedded, but
+            // Android 17 leaves that task behind the bubble window. Collapse first;
+            // capture all launch data above because the view may be rebuilt/cleared.
+            collapseBubbleExpandedView(expandedView);
+            final ComponentName launchTarget = target;
+            final UserHandle launchUser = user;
+            final LauncherApps launchService = launcher;
+            new android.os.Handler(Looper.getMainLooper()).postDelayed(() -> {
+                try {
+                    launchService.startMainActivity(launchTarget, launchUser, null, null);
+                    Log.i(TAG, "corner action: launcher start submitted package="
+                            + packageName + " user=" + userIdOf(launchUser));
+                } catch (Throwable t) {
+                    Log.w(TAG, "corner action: delayed launcher start failed: " + t.getMessage(), t);
+                }
+            }, 280L);
         } catch (Throwable t) {
             Log.w(TAG, "corner action: launcher start failed: " + t.getMessage(), t);
         }
