@@ -745,7 +745,7 @@ public class MoreBubbleHookModule extends XposedModule {
             if (clone instanceof android.widget.TextView) {
                 ((android.widget.TextView) clone).setText("展开小窗");
             }
-            clone.setOnClickListener(v -> launchBubbleApp(expandedView));
+            clone.setOnClickListener(v -> expandBubbleFullscreen(expandedView));
             clone.setTag(CORNER_ROW_TAG, Boolean.TRUE);
             addCloneBesideManageButton(expandedView, manageButton, clone);
             Log.i(TAG, "corner action: cloned right button -> fullscreen");
@@ -916,6 +916,28 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
+    /** Official Bubble -> fullscreen handoff, preserving the current task/page. */
+    private static void expandBubbleFullscreen(Object expandedView) {
+        try {
+            Object bubble = getField(expandedView, "mBubble");
+            Object bubbleTaskView = bubble != null ? getField(bubble, "mBubbleTaskView") : null;
+            Object taskView = bubbleTaskView != null ? getField(bubbleTaskView, "taskView") : null;
+            Object controller = taskView != null ? getField(taskView, "mTaskViewController") : null;
+            Object taskController = controller != null ? getField(taskView, "mTaskViewTaskController") : null;
+            if (controller == null || taskController == null) {
+                throw new IllegalStateException("Bubble task view controller unavailable");
+            }
+            Method move = findMethod(controller.getClass(),
+                    "moveTaskViewToFullscreen", taskController.getClass());
+            if (move == null) throw new NoSuchMethodException("moveTaskViewToFullscreen");
+            move.invoke(controller, taskController);
+            Log.i(TAG, "corner action: official fullscreen handoff submitted");
+        } catch (Throwable t) {
+            Log.w(TAG, "corner action: official fullscreen handoff failed: " + t.getMessage(), t);
+        }
+    }
+
+    /* Retained as a diagnostic fallback only; the corner button does not use it. */
     private static volatile long sLastCornerLaunchAt;
 
     /** Collapse the embedded bubble first, then launch its exact user/profile entry. */
