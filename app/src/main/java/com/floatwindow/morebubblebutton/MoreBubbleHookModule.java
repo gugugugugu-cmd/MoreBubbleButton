@@ -822,12 +822,13 @@ public class MoreBubbleHookModule extends XposedModule {
                 return;
             }
 
-            // 官方按钮（左下角）：只改文案 + 重设点击 = 收起小窗回到贴边列表（不删除气泡）。
+            // 左下角按钮复用“拖到底部关闭”的官方语义：USER_GESTURE。
+            // 不再调用 collapseStack()，否则只是贴边，随后 SystemUI 仍会重新展开该 Bubble。
             if (manageButton instanceof android.widget.TextView) {
                 ((android.widget.TextView) manageButton).setText("关闭小窗");
             }
-            manageButton.setOnClickListener(v -> collapseBubbleExpandedView(expandedView));
-            Log.i(TAG, "corner action: left manage button -> collapse stack");
+            manageButton.setOnClickListener(v -> dismissBubbleAsUserGesture(expandedView));
+            Log.i(TAG, "corner action: left manage button -> dismiss as USER_GESTURE");
 
             // 右侧克隆同款按钮（右下角）：点击 = 该气泡任务全屏展开。
             View clone = cloneManageButton(manageButton);
@@ -966,7 +967,56 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
-    /** 关闭小窗：BubbleExpandedView.mStackView.mBubbleController.collapseStack()。 */
+    /** Close exactly like dragging the bubble to the bottom dismiss target. */
+    private static void dismissBubbleAsUserGesture(Object expandedView) {
+        try {
+            Object bubble = getField(expandedView, "mBubble");
+            Object key = bubble != null ? getField(bubble, "mKey") : null;
+            Object stackView = getField(expandedView, "mStackView");
+            Object data = stackView != null ? getField(stackView, "mBubbleData") : null;
+            if (data == null || !(key instanceof String)) {
+                throw new IllegalStateException("BubbleData/key unavailable");
+            }
+            Method dismiss = null;
+            for (Method method : data.getClass().getDeclaredMethods()) {
+                if (!"dismissBubbleWithKey".equals(method.getName())
+                        || method.getParameterCount() < 2
+                        || method.getParameterTypes()[0] != int.class
+                        || method.getParameterTypes()[method.getParameterCount() - 1] != String.class) {
+                    continue;
+                }
+                method.setAccessible(true);
+                dismiss = method;
+                break;
+            }
+            if (dismiss == null) throw new NoSuchMethodException("dismissBubbleWithKey");
+            Object[] args = new Object[dismiss.getParameterCount()];
+            args[0] = 4; // BubbleData.DismissReason.USER_GESTURE on Android 17.
+            for (int i = 1; i < args.length - 1; i++) {
+                Class<?> type = dismiss.getParameterTypes()[i];
+                args[i] = type.isPrimitive() ? primitiveDefault(type) : null;
+            }
+            args[args.length - 1] = key;
+            dismiss.invoke(data, args);
+            Log.i(TAG, "corner action: dismissed bubble key=" + key + " reason=USER_GESTURE");
+        } catch (Throwable t) {
+            Log.w(TAG, "corner action: dismiss bubble failed: " + t.getMessage(), t);
+        }
+    }
+
+    private static Object primitiveDefault(Class<?> type) {
+        if (type == boolean.class) return false;
+        if (type == byte.class) return (byte) 0;
+        if (type == short.class) return (short) 0;
+        if (type == int.class) return 0;
+        if (type == long.class) return 0L;
+        if (type == float.class) return 0f;
+        if (type == double.class) return 0d;
+        if (type == char.class) return (char) 0;
+        return null;
+    }
+
+    /** Legacy collapse helper retained for non-button callers. */
     private static void collapseBubbleExpandedView(Object expandedView) {
         // 收起小窗 = BubbleData.setExpanded(false)：把展开的小窗收回到贴边气泡列表。
         // BubbleStackView 在 Android 17 并没有直接的 mBubbleController 字段，改为用
