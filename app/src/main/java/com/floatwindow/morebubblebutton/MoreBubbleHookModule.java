@@ -12,7 +12,6 @@ import android.net.Uri;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Parcel;
-import android.os.SystemClock;
 import android.os.UserHandle;
 import android.util.Log;
 import android.view.View;
@@ -63,20 +62,6 @@ public class MoreBubbleHookModule extends XposedModule {
     private ClassLoader mSystemUiClassLoader;
     private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
     private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
-
-    // Only suppress the edge overflow button during the official handoff.
-    // Do not hook the getter unconditionally: Android 17 reuses that View in
-    // the expanded/title-bar layout as well.
-    private static volatile long sSuppressEdgePlusUntil;
-    private static final long EDGE_PLUS_SUPPRESS_MS = 1800L;
-
-    private static void armEdgePlusSuppress() {
-        sSuppressEdgePlusUntil = SystemClock.uptimeMillis() + EDGE_PLUS_SUPPRESS_MS;
-    }
-
-    private static boolean suppressEdgePlusWindowActive() {
-        return SystemClock.uptimeMillis() < sSuppressEdgePlusUntil;
-    }
 
     // The right corner action uses the official Bubble -> fullscreen handoff.
     // No Bubble -> fullscreen transition is submitted, so SystemUI never rebuilds
@@ -296,86 +281,9 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "Hooked BubbleExpandedView.updateManageButtonIfExists (corner buttons) OK");
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
 
-        // Android 17 reuses BubbleOverflow.overflowBtn. Only touch the instance
-        // while it is attached below BubbleStackView's edge bubble container;
-        // never hide the shared getter result in the title-bar layout.
-        try {
-            Class<?> stackCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleStackView");
-            for (String methodName : new String[] {"updateOverflow", "updateOverflowVisibility"}) {
-                Method update = findMethodSystemUi(stackCls, methodName);
-                if (update == null) continue;
-                hook(update).intercept(chain -> {
-                    Object result = chain.proceed();
-                    if (suppressEdgePlusWindowActive()) hideEdgePlusFromEdgeContainer(chain.getThisObject());
-                    return result;
-                });
-            }
-            Class<?> transition = cl.loadClass(
-                    "com.android.wm.shell.bubbles.transitions.BubbleTransitions$ConvertFromBubble");
-            Method start = findMethodByNameCount(transition, "startAnimation", 6);
-            if (start != null) {
-                hook(start).intercept(chain -> {
-                    armEdgePlusSuppress();
-                    return chain.proceed();
-                });
-            }
-            Log.i(TAG, "Hooked edge overflow only inside BubbleStackView container");
-        } catch (Throwable t) {
-            Log.w(TAG, "Hook edge overflow container: " + t.getMessage());
-        }
-
         Log.i(TAG, "All SystemUI hooks installed");
     }
 
-    private static void hideEdgePlusFromEdgeContainer(Object stack) {
-        try {
-            Object overflow = getField(stack, "mBubbleOverflow");
-            Object button = overflow != null ? getField(overflow, "overflowBtn") : null;
-            if (!(button instanceof View)) return;
-            View target = (View) button;
-            ViewGroup edgeContainer = null;
-            for (Class<?> c = stack.getClass(); c != null && edgeContainer == null; c = c.getSuperclass()) {
-                for (java.lang.reflect.Field f : c.getDeclaredFields()) {
-                    if (!ViewGroup.class.isAssignableFrom(f.getType())) continue;
-                    if (!f.getName().toLowerCase().contains("bubblecontainer")) continue;
-                    f.setAccessible(true);
-                    Object value = f.get(stack);
-                    if (value instanceof ViewGroup && isDescendant((View) value, target)) {
-                        edgeContainer = (ViewGroup) value;
-                        break;
-                    }
-                }
-            }
-            if (edgeContainer == null) return;
-            target.setVisibility(View.GONE);
-            target.setClickable(false);
-            target.setEnabled(false);
-            Log.i(TAG, "edge overflow plus hidden in BubbleStackView container");
-        } catch (Throwable t) {
-            Log.w(TAG, "hide edge overflow plus: " + t.getMessage());
-        }
-    }
-
-    private static boolean isDescendant(View ancestor, View child) {
-        for (View v = child; v != null; ) {
-            if (v == ancestor) return true;
-            Object parent = v.getParent();
-            v = parent instanceof View ? (View) parent : null;
-        }
-        return false;
-    }
-
-    private static Method findMethodByNameCount(Class<?> type, String name, int count) {
-        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
-            for (Method m : c.getDeclaredMethods()) {
-                if (name.equals(m.getName()) && m.getParameterCount() == count) {
-                    m.setAccessible(true);
-                    return m;
-                }
-            }
-        }
-        return null;
-    }
 
     private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {
         try {
@@ -991,7 +899,7 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             if (dismiss == null) throw new NoSuchMethodException("dismissBubbleWithKey");
             Object[] args = new Object[dismiss.getParameterCount()];
-            args[0] = 4; // BubbleData.DismissReason.USER_GESTURE on Android 17.
+            args[0] = 1; // BubbleData.DismissReason.USER_GESTURE on Android 17.
             for (int i = 1; i < args.length - 1; i++) {
                 Class<?> type = dismiss.getParameterTypes()[i];
                 args[i] = type.isPrimitive() ? primitiveDefault(type) : null;
@@ -1073,11 +981,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Method move = findMethod(controller.getClass(),
                     "moveTaskViewToFullscreen", taskController.getClass());
             if (move == null) throw new NoSuchMethodException("moveTaskViewToFullscreen");
-            // Arm before the asynchronous Shell transition can rebuild the edge
-            // container, then the startAnimation hook extends the same window.
-            armEdgePlusSuppress();
             move.invoke(controller, taskController);
-            armEdgePlusSuppress();
             Log.i(TAG, "corner action: official fullscreen handoff submitted");
         } catch (Throwable t) {
             Log.w(TAG, "corner action: official fullscreen handoff failed: " + t.getMessage(), t);
