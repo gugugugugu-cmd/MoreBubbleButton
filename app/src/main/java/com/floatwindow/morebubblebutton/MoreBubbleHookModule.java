@@ -36,7 +36,6 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     private Object recentsViewInstance;
     private View bubbleButton;
-    private static View sSecondRow;
     private ClassLoader mLauncherClassLoader;
 
     @Override
@@ -1100,77 +1099,14 @@ public class MoreBubbleHookModule extends XposedModule {
         ViewGroup actionsParent = (ViewGroup) actionsView;
 
         Button btn = createBubbleButton(ctx, res, pkg);
-        int positionMode = ModuleSettings.getPositionMode(ctx);
-        if (positionMode == 0) {
-            addToActionButtons(actionsParent, btn, res, pkg);
-        } else {
-            ensureSecondRow(actionsParent, btn, res, pkg);
-        }
+        addToActionButtons(actionsParent, btn, res, pkg);
     }
 
     /**
-     * 更新第二行位置 — 读取当前设置并应用到 LayoutParams
-     */
-    private void updateSecondRowPosition(Context ctx, FrameLayout.LayoutParams lp) {
-        int posX = ModuleSettings.getPosX(ctx);
-        int posY = ModuleSettings.getPosY(ctx);
-        float density = ctx.getResources().getDisplayMetrics().density;
-
-        // Y 偏移
-        int maxOffset = (int)(48 * density);
-        lp.bottomMargin = (int)(Math.min(posY * 1.4f, 100f) / 100f * maxOffset);
-
-        // X margin — 需要等 View 宽度可用
-        if (sSecondRow != null && sSecondRow.getWidth() > 0) {
-            applyXMargin(ctx, lp);
-        } else if (sSecondRow != null) {
-            sSecondRow.post(() -> {
-                if (sSecondRow != null && sSecondRow.getWidth() > 0) {
-                    FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) sSecondRow.getLayoutParams();
-                    applyXMargin(ctx, p);
-                    sSecondRow.setLayoutParams(p);
-                }
-            });
-        }
-
-        if (sSecondRow != null) {
-            sSecondRow.setLayoutParams(lp);
-            Log.i(TAG, "Position updated: X=" + posX + " Y=" + posY);
-        }
-    }
-
-    private static void applyXMargin(Context ctx, FrameLayout.LayoutParams lp) {
-        int posX = ModuleSettings.getPosX(ctx);
-        float density = ctx.getResources().getDisplayMetrics().density;
-        ViewGroup parent = (ViewGroup) sSecondRow.getParent();
-        if (parent == null) return;
-        int parentWidth = parent.getWidth();
-        int btnWidth = sSecondRow.getWidth();
-        if (btnWidth <= 0 || parentWidth <= 0) return;
-
-        // 纯百分比，50%居中时自动补偿图标偏移
-        int iconOffset = (int)(13 * density); // 图标左置补偿
-        float maxMargin = parentWidth - btnWidth;
-        int marginStart = (int)((posX / 100f) * maxMargin) - iconOffset;
-        lp.setMarginStart((int) Math.max(0, Math.min(marginStart, maxMargin)));
-        Log.i(TAG, "applyXMargin: posX=" + posX + " marginStart=" + marginStart
-                + " maxMargin=" + maxMargin + " parentW=" + parentWidth + " btnW=" + btnWidth);
-    }
-
-    /**
-     * 模式0：跟随原按钮 — 直接加到 action_buttons 末尾
+     * 直接加到 action_buttons 末尾（跟随系统原有按钮的位置）
      */
     private void addToActionButtons(ViewGroup actionsParent, Button btn,
             android.content.res.Resources res, String pkg) {
-        // 如果之前在第二行，先移除
-        if (sSecondRow != null) {
-            if (bubbleButton != null) ((ViewGroup) sSecondRow).removeView(bubbleButton);
-            if (((ViewGroup) sSecondRow).getChildCount() == 0) {
-                actionsParent.removeView(sSecondRow);
-            }
-            sSecondRow = null;
-        }
-
         int abId = res.getIdentifier("action_buttons", "id", pkg);
         LinearLayout actionButtons = (LinearLayout) actionsParent.findViewById(abId);
         if (actionButtons == null) return;
@@ -1240,101 +1176,6 @@ public class MoreBubbleHookModule extends XposedModule {
 
         btn.setOnClickListener(v -> onBubbleButtonClick((View) btn.getParent().getParent()));
         return btn;
-    }
-
-    @SuppressLint("DiscouragedApi")
-    private void ensureSecondRow(ViewGroup actionsParent, Button btn,
-            android.content.res.Resources res, String pkg) {
-        Context ctx = actionsParent.getContext();
-
-        if (sSecondRow != null && sSecondRow.getParent() == actionsParent) {
-            for (int i = 0; i < ((ViewGroup) sSecondRow).getChildCount(); i++) {
-                if (((ViewGroup) sSecondRow).getChildAt(i).getTag() != null
-                        && "bubble_button".equals(((ViewGroup) sSecondRow).getChildAt(i).getTag().toString())) {
-                    bubbleButton = ((ViewGroup) sSecondRow).getChildAt(i);
-                    return;
-                }
-            }
-            ViewGroup.MarginLayoutParams mlp = new ViewGroup.MarginLayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            int spId = res.getIdentifier("overview_actions_button_spacing", "dimen", pkg);
-            if (spId != 0) mlp.setMarginStart(res.getDimensionPixelSize(spId));
-            btn.setLayoutParams(mlp);
-            ((ViewGroup) sSecondRow).addView(btn);
-            bubbleButton = btn;
-            return;
-        }
-
-        LinearLayout newSecondRow = new LinearLayout(ctx);
-        newSecondRow.setTag("bubble_second_row");
-        newSecondRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        // 使用 X/Y 坐标定位
-        int posX = ModuleSettings.getPosX(ctx);
-        int posY = ModuleSettings.getPosY(ctx);
-
-        // X 轴：用 marginStart 连续定位（不再用离散 gravity）
-        // posX 0%=左对齐, 50%=居中, 100%=右对齐
-        float density = ctx.getResources().getDisplayMetrics().density;
-
-        ViewGroup.MarginLayoutParams btnMlp = new ViewGroup.MarginLayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        int spId = res.getIdentifier("overview_actions_button_spacing", "dimen", pkg);
-        if (spId != 0) btnMlp.setMarginStart(res.getDimensionPixelSize(spId));
-        btn.setLayoutParams(btnMlp);
-        newSecondRow.addView(btn);
-        bubbleButton = btn;
-
-        // 定位：用 layout_gravity=START|BOTTOM + marginStart 实现所有位置
-        FrameLayout.LayoutParams rowLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rowLp.gravity = android.view.Gravity.START | android.view.Gravity.BOTTOM;
-
-        // Y 偏移：posY 0% = 紧贴底部，100% = 向上偏移 48dp
-        int maxOffset = (int)(48 * density);
-        int bottomOffset = (int)(Math.min(posY * 1.4f, 100f) / 100f * maxOffset);
-        rowLp.bottomMargin = bottomOffset;
-
-        int insertIndex = 0;
-        int abId = res.getIdentifier("action_buttons", "id", pkg);
-        View abv = actionsParent.findViewById(abId);
-        if (abv != null) insertIndex = actionsParent.indexOfChild(abv) + 1;
-
-        actionsParent.addView(newSecondRow, insertIndex, rowLp);
-        sSecondRow = newSecondRow;
-
-        // post 里应用 X margin + 同步 alpha
-        newSecondRow.post(() -> {
-            // X margin + alpha 同步 — 用 OnPreDrawListener 保证每帧都正确
-            View abv2 = actionsParent.findViewById(
-                    res.getIdentifier("action_buttons", "id", pkg));
-            actionsParent.getViewTreeObserver().addOnPreDrawListener(
-                    new ViewTreeObserver.OnPreDrawListener() {
-                        private int lastX = Integer.MIN_VALUE;
-                        private int lastY = Integer.MIN_VALUE;
-
-                        @Override public boolean onPreDraw() {
-                            if (sSecondRow != null && sSecondRow.getWidth() > 0) {
-                                int posX = ModuleSettings.getPosX(ctx);
-                                int posY = ModuleSettings.getPosY(ctx);
-                                if (posX != lastX || posY != lastY) {
-                                    FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) sSecondRow.getLayoutParams();
-                                    int maxOffset = (int)(48 * ctx.getResources().getDisplayMetrics().density);
-                                    p.bottomMargin = (int)(Math.min(posY * 1.4f, 100f) / 100f * maxOffset);
-                                    applyXMargin(ctx, p);
-                                    sSecondRow.setLayoutParams(p);
-                                    lastX = posX;
-                                    lastY = posY;
-                                    Log.i(TAG, "live position applied: X=" + posX + " Y=" + posY);
-                                }
-                            }
-                            // alpha 同步
-                            if (sSecondRow != null && abv2 != null)
-                                sSecondRow.setAlpha(abv2.getAlpha());
-                            return true;
-                        }
-                    });
-        });
     }
 
     private void updateBubbleVisibility(Object av) {}
@@ -1539,51 +1380,6 @@ public class MoreBubbleHookModule extends XposedModule {
     private static void showToast(Context ctx, String msg) {
         new android.os.Handler(Looper.getMainLooper()).post(() ->
                 Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show());
-    }
-
-    /**
-     * 静态方法：从模块 Activity 调用，重新应用位置设置
-     */
-    public static void applyPositionFromSettings(Context ctx) {
-        if (sSecondRow == null) {
-            Log.i(TAG, "applyPositionFromSettings: sSecondRow is null, settings saved for next load");
-            return;
-        }
-
-        try {
-            Log.i(TAG, "applyPositionFromSettings: X=" + ModuleSettings.getPosX(ctx)
-                    + " Y=" + ModuleSettings.getPosY(ctx));
-
-            if (sSecondRow.getLayoutParams() instanceof FrameLayout.LayoutParams) {
-                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) sSecondRow.getLayoutParams();
-                float density = ctx.getResources().getDisplayMetrics().density;
-
-                // Y 偏移
-                int posY = ModuleSettings.getPosY(ctx);
-                int maxOffset = (int)(48 * density);
-                lp.bottomMargin = (int)(Math.min(posY * 1.4f, 100f) / 100f * maxOffset);
-
-                // X margin — 等布局完成后应用
-                if (sSecondRow.getWidth() > 0) {
-                    applyXMargin(ctx, lp);
-                } else {
-                    sSecondRow.post(() -> {
-                        if (sSecondRow != null && sSecondRow.getWidth() > 0) {
-                            FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) sSecondRow.getLayoutParams();
-                            applyXMargin(ctx, p);
-                            sSecondRow.requestLayout();
-                            Log.i(TAG, "X margin applied via post");
-                        }
-                    });
-                }
-
-                sSecondRow.setLayoutParams(lp);
-                sSecondRow.requestLayout();
-                Log.i(TAG, "Position applied: X=" + ModuleSettings.getPosX(ctx) + " Y=" + posY);
-            }
-        } catch (Throwable t) {
-            Log.e(TAG, "applyPositionFromSettings failed: " + t.getMessage());
-        }
     }
 
     private static View findViewByTag(View view, String tag) {
