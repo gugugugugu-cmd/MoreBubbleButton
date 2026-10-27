@@ -68,6 +68,9 @@ public class MoreBubbleHookModule extends XposedModule {
 
     private void hookSystemUi(ClassLoader cl) {
         Log.i(TAG, "Hooking SystemUI...");
+        try {
+            mSystemUiContext = currentApplication();
+        } catch (Throwable t) { Log.w(TAG, "SystemUI context: " + t.getMessage()); }
         // 1. shouldShowBubbleButton: 让所有非前台通知显示气泡按钮
         try {
             Class<?> clazz = cl.loadClass(
@@ -234,6 +237,7 @@ public class MoreBubbleHookModule extends XposedModule {
                     try {
                         Object provider = chain.getArg(0);
                         Object bubbleData = chain.getThisObject();
+                        cacheControllerFromBubbleData(bubbleData);
                         if (provider != null && provider.getClass().getName().endsWith("BubbleEntry")) {
                             java.lang.reflect.Field f = findFieldSystemUi(bubbleData.getClass(), "mBubbles");
                             if (f != null) {
@@ -280,7 +284,108 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "Hooked BubbleExpandedView.updateManageButtonIfExists (corner buttons) OK");
         } catch (Throwable t) { Log.e(TAG, "Hook manage button: " + t.getMessage()); }
 
+        // 8. 外部调用入口：注册广播接收器，供 GestureEVO 等手势工具的轮盘请求开气泡。
+        //    Context 在 hookSystemUi 入口已缓存；BubbleController 由 setSelectedBubbleInternal
+        //    的 hook 顺手缓存（见 cacheControllerFromBubbleData）。
+        try {
+            BubbleRequestReceiver.install(mSystemUiContext);
+        } catch (Throwable t) { Log.w(TAG, "BubbleRequestReceiver install: " + t.getMessage()); }
+
         Log.i(TAG, "All SystemUI hooks installed");
+    }
+
+    /** 当前进程的 Application（SystemUI 进程中即 SystemUI 自己的 Context）。 */
+    private static Context currentApplication() {
+        try {
+            Class<?> at = Class.forName("android.app.ActivityThread");
+            Object thread = at.getMethod("currentActivityThread").invoke(null);
+            Object app = at.getMethod("getApplication").invoke(thread);
+            if (app instanceof Context) return (Context) app;
+        } catch (Throwable ignored) { }
+        return null;
+    }
+
+    /** SystemUI 进程的 Context；hookSystemUi 入口处缓存，供外部广播入口与开气泡使用。 */
+    private static Context mSystemUiContext;
+
+    /** 按包名给应用弹出气泡小窗（供 BubbleRequestReceiver 调用）。 */
+    static void requestAppBubble(Context ctx, String pkg, int userId) {
+        // onReceive 不保证在主线程；BubbleController 的操作必须在 SystemUI 主线程执行。
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            new android.os.Handler(Looper.getMainLooper())
+                    .post(() -> requestAppBubble(ctx, pkg, userId));
+            return;
+        }
+        try {
+            if (ctx == null) {
+                Log.w(TAG, "requestAppBubble: no SystemUI context yet");
+                return;
+            }
+            Context appCtx = ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx;
+            Intent launch = appCtx.getPackageManager().getLaunchIntentForPackage(pkg);
+            if (launch == null) {
+                Log.w(TAG, "requestAppBubble: no launch intent for " + pkg);
+                return;
+            }
+            launch.setPackage(pkg);
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            UserHandle user = (UserHandle) UserHandle.class.getMethod("of", int.class).invoke(null, userId);
+            Object controller = sCachedController != null ? sCachedController : findBubbleController(ctx);
+            if (controller == null) {
+                Log.w(TAG, "requestAppBubble: BubbleController unavailable");
+                return;
+            }
+            boolean done = expandAppBubbleA17(controller, launch, user, "external-request");
+            if (!done) done = expandAppBubbleLegacy(controller, launch, user, "external-request");
+            Log.i(TAG, "requestAppBubble pkg=" + pkg + " -> " + (done ? "expanded" : "FAILED"));
+        } catch (Throwable t) {
+            Log.w(TAG, "requestAppBubble failed: " + t.getMessage(), t);
+        }
+    }
+
+    /** 从 SystemUI 的 WindowManagerService 侧取出 BubbleController；失败返回 null。 */
+    private static Object findBubbleController(Context ctx) {
+        try {
+            Object bubblesManager = SystemServiceRegistryBubbles(ctx);
+            if (bubblesManager == null) return null;
+            Object bubblesImpl = getFieldSystemUi(bubblesManager, "mBubbles");
+            return getFieldSystemUi(bubblesImpl, "this$0");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static Object SystemServiceRegistryBubbles(Context ctx) {
+        try {
+            return ctx.getSystemService("bubbles");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 已缓存的 BubbleController。hookSystemUi 里的 setSelectedBubbleInternal 每次都会拿到
+     * BubbleData，从它的 this$0 反查 controller 比 getSystemService 更可靠——后者在部分
+     * ROM 上返回的不是带 mBubbles 字段的对象。
+     */
+    private static volatile Object sCachedController;
+
+    static void cacheControllerFromBubbleData(Object bubbleData) {
+        try {
+            if (bubbleData == null) return;
+            Object c = getFieldSystemUi(bubbleData, "this$0");
+            if (c == null) {
+                // BubbleData 不一定是内嵌类；退一步找同 ClassLoader 上的 controller 字段。
+                java.lang.reflect.Field f = findFieldSystemUi(bubbleData.getClass(), "mController");
+                if (f != null) {
+                    f.setAccessible(true);
+                    c = f.get(bubbleData);
+                }
+            }
+            if (c != null && c.getClass().getName().contains("BubbleController")) {
+                sCachedController = c;
+            }
+        } catch (Throwable ignored) { }
     }
 
 

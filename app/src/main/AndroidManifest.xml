@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 外部手势工具（如 GestureEVO 轮盘）请求开气泡时需持有此权限；shell / root 免权限。 -->
+    <permission
+        android:name="com.floatwindow.morebubblebutton.permission.SHOW_BUBBLE"
+        android:protectionLevel="signature" />
     <application
         android:label="@string/app_name"
         android:icon="@drawable/ic_launcher"
