@@ -5,23 +5,20 @@ import android.view.View;
 import android.view.ViewGroup;
 
 /**
- * 气泡小窗底部按钮容器：「关闭小窗」（左）与「展开小窗」（右）放进同一个普通
- * {@link ViewGroup}，{@link #onLayout} 每次把两颗按钮排到相对本容器的最新位置。
+ * 气泡小窗底部按钮容器：官方「关闭小窗」（左）与自造「展开小窗」（右）放进同一个普通
+ * {@link ViewGroup}，成为同一个父 View 的两个 child。
  *
- * <p>为什么要容器：两颗按钮必须同一个父 View，官方对小窗做的位移（上滑手势、展开/收起动画）
- * 才会同时带上它们，右侧按钮不会停在原地。
+ * <p>为什么还要自己对齐：官方对小窗做上滑 / 收起动画时，推的是「管理按钮那一行」——
+ * 也就是改官方按钮的 position（layout）+ visibility，而不是只改容器。克隆按钮是另一颗 View，
+ * 不会自动跟过去，于是会被小窗边界裁掉一半、右侧留在原地。所以每次官方按钮 layout 变化
+ * （{@link OnLayoutChangeListener}，在 draw 之前同步回调），立刻把右侧按钮摆到同一行同一位置。
  *
- * <p>为什么还要自己量：官方 {@code BubbleExpandedView} 是垂直 LinearLayout，而 {@code addView}
- * 传进去的布局参数不一定是 {@code LinearLayout.LayoutParams}。线性布局按子 View 的「竖直占位」
- * 累加高度，参数类型不对时它拿不到高度，那一行就被算成 0 —— 两颗按钮一起消失。所以容器自己
- * 按「两颗按钮里最高的那颗」量出高度并往父级报回去，不指望父级给。
+ * <p>为什么容器自己量高度：官方 {@code BubbleExpandedView} 是垂直 LinearLayout，
+ * 传给 addView 的布局参数不一定是 {@code LinearLayout.LayoutParams}，它拿不到高度时这一行会算成 0，
+ * 两颗按钮一起消失。容器自己按「两颗按钮里最高的那颗」量出高度往父级报，不指望父级给。
  *
- * <p>为什么不靠子 View 的布局参数：官方 {@code mManageButton} 的布局参数来自其它父容器，
- * 直接塞进本容器可能类型对不上，所以容器自己量、自己报高度，子 View 的布局参数一律不碰。
- *
- * <p>为什么必须 setId(bubble_expanded_view)：官方有代码按这个 id 找底部容器
- * （{@code findViewById(R.id.bubble_expanded_view)}），容器接替了「管理按钮那一行」的位置，
- * id 跟着带过来，父级 findViewById 依然能找到它。
+ * <p>为什么克隆按钮要套官方按钮的最小宽高：官方按钮尺寸来自布局文件，克隆体没有，
+ * 只给 WRAP_CONTENT 时浅色胶囊背景只包住文字，看起来像「样式变了」。
  */
 class SyncCornerLayout extends ViewGroup {
     View primary;   // 官方 mManageButton（关闭小窗）
@@ -46,14 +43,66 @@ class SyncCornerLayout extends ViewGroup {
             addView(secondary);
         }
         if (tertiary != null) addView(tertiary);
+        matchPrimarySize();
+        if (primary != null && tertiary != null) {
+            // 官方按钮每次被摆位置 / 改显隐都会走这里，克隆按钮在同一帧内跟上。
+            primary.addOnLayoutChangeListener(new OnLayoutChangeListener() {
+                @Override public void onLayoutChange(View v, int l, int t, int r, int b,
+                        int ol, int ot, int or, int ob) {
+                    syncTertiary();
+                }
+            });
+            // 官方按钮可能在容器布局之后才被摆到位（它是父级直接摆放的子 View），下一帧再对一次。
+            primary.post(new Runnable() {
+                @Override public void run() { syncTertiary(); }
+            });
+        }
         requestLayout();
     }
 
+    /** 克隆按钮套用官方按钮的尺寸：最小宽度 + 高度，胶囊背景才不会只包住文字。 */
+    private void matchPrimarySize() {
+        if (primary == null) return;
+        primary.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED),
+                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+        int w = primary.getMeasuredWidth();
+        int h = primary.getMeasuredHeight();
+        if (w <= 0) return;
+        if (primary.getMinimumWidth() < w) primary.setMinimumWidth(w);
+        if (tertiary != null) {
+            if (tertiary.getMinimumWidth() < w) tertiary.setMinimumWidth(w);
+            if (h > 0 && tertiary instanceof android.widget.TextView) {
+                ((android.widget.TextView) tertiary).setMinHeight(h);
+            }
+        }
+    }
+
+    /** 把「展开小窗」摆到和官方按钮同一行：同一个 top、同一个高度、同一条底边。 */
+    private void syncTertiary() {
+        if (primary == null || tertiary == null) return;
+        int width = getWidth();
+        if (width <= 0) return;
+        int bLeft = primary.getLeft();
+        int bTop = primary.getTop();
+        int bWidth = primary.getWidth();
+        int bHeight = primary.getHeight();
+        if (bWidth > 0 && tertiary.getMinimumWidth() < bWidth) tertiary.setMinimumWidth(bWidth);
+        int tw = Math.max(tertiary.getMeasuredWidth(), primary.getMeasuredWidth());
+        int th = Math.max(tertiary.getMeasuredHeight(), bHeight);
+        int left = width - padEnd() - tw;
+        if (left < 0) left = 0;
+        int top = bTop + (bHeight - th); // 底边对齐
+        if (tertiary.getLeft() != left || tertiary.getTop() != top
+                || tertiary.getWidth() != tw || tertiary.getHeight() != th) {
+            tertiary.layout(left, top, left + tw, top + th);
+        }
+        int vis = primary.getVisibility();
+        if (tertiary.getVisibility() != vis) tertiary.setVisibility(vis);
+    }
+
     /**
-     * 父级是 LinearLayout 时，子 View 高度 WRAP_CONTENT 会被「两次测量」撑满剩余空间：
-     * 第一次量完后 LinearLayout 给自己置 PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT，下一次测量就用
-     * heightMeasureSpec 再量一遍。容器里没有这个约束，所以量完给子 View 补上同一行为，
-     * 子 View 的布局参数保持最普通的那一种，不带任何自定义类型。
+     * 父级是 LinearLayout 时，子 View 高度 WRAP_CONTENT 会被「两次测量」撑满剩余空间。
+     * 这里量完给子 View 补上同样的标记，子 View 的布局参数保持最普通的那种。
      */
     private static void markMeasuredOnce(View v) {
         try {
@@ -62,7 +111,6 @@ class SyncCornerLayout extends ViewGroup {
             int flags = (int) f.get(v);
             f.setInt(v, flags | 0x8); // View.PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT
         } catch (Throwable ignored) {
-            // 反射受限时就算了：最多是子 View 在极窄情况下被撑高，不影响显隐。
         }
     }
 
@@ -85,7 +133,6 @@ class SyncCornerLayout extends ViewGroup {
         if (primary != null) { primary.measure(wChild, hChild); markMeasuredOnce(primary); }
         if (secondary != null) secondary.measure(wChild, hChild);
         if (tertiary != null) { tertiary.measure(wChild, hChild); markMeasuredOnce(tertiary); }
-        // 高度自己定：父级给的是 LinearLayout 的剩余空间，不能用。
         int height = getPaddingTop() + rowHeight() + getPaddingBottom();
         setMeasuredDimension(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
                 MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
@@ -106,9 +153,9 @@ class SyncCornerLayout extends ViewGroup {
         if (tertiary != null) {
             int tw = tertiary.getMeasuredWidth();
             int th = tertiary.getMeasuredHeight();
-            // 与左侧按钮共用底边：相同基线、同一个高度基准。
             tertiary.layout(width - padEnd() - tw, height - th, width - padEnd(), height);
         }
+        syncTertiary();
     }
 
     @Override
