@@ -37,7 +37,7 @@ public class MoreBubbleHookModule extends XposedModule {
     /** 编译标记：日志里能直接看出跑的是哪一版 */
     /** 气泡底部按钮（诊断显示用） */
     private static volatile View sLastCornerButton;
-    private static final String BUILD_TAG = "v1.32-proceed-args";
+    private static final String BUILD_TAG = "v1.33-telegram-pair";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -505,6 +505,23 @@ public class MoreBubbleHookModule extends XposedModule {
         Context ctx = sSystemUiContext;
         if (ctx == null) { showDiag("ctx=null@launch"); return null; }
         Intent target = new Intent(base != null ? base : new Intent());
+        // Telegram 的 BubbleActivity 只认 com.tmessages.openchat 这条 action 分支；
+        // 其它 action 会直接 finish()。没有 chatId 时宁可不换（保持原界面），
+        // 也不要换成 0.5 秒就消失的空白气泡。
+        if ("org.telegram.ui.BubbleActivity".equals(forced)) {
+            long chatId = target.getLongExtra("chatId", 0L);
+            if (chatId == 0L) {
+                // 没有会话：仍然换成 BubbleActivity，但不走 openchat 分支。
+                // Telegram 侧由 hookRelaxedBubbleActivity() 兜住，避免它直接 finish。
+                target.putExtra("mbb_no_chat", true);
+                Log.i(TAG, "telegram: no chatId -> BubbleActivity (relaxed mode)");
+                showDiag("relaxed");
+            } else {
+                target.setAction("com.tmessages.openchat" + chatId);
+                Log.i(TAG, "telegram: open chat " + chatId);
+                showDiag("chat:" + chatId);
+            }
+        }
         target.setComponent(new ComponentName(pkg, forced));
         target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                 | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
@@ -945,6 +962,36 @@ public class MoreBubbleHookModule extends XposedModule {
         return 0;
     }
 
+
+    /**
+     * 把通知里的 chat_id / user_id 映射成 Telegram BubbleActivity 读取的 chatId / userId。
+     * 没有就直接返回，由调用方回退到「不替换」。
+     */
+    private static void copyTelegramChatExtras(Intent intent) {
+        try {
+            android.os.Bundle extras = intent.getExtras();
+            if (extras == null) return;
+            boolean hasChat = extras.containsKey("chatId");
+            if (hasChat) return;
+            // 常见两种写法：直接在 extras 上，或嵌在 bundle 里
+            long chatId = extras.getLong("chat_id", 0L);
+            long userId = extras.getLong("user_id", 0L);
+            if (chatId == 0L) {
+                android.os.Bundle inner = extras.getBundle("bundle");
+                if (inner != null) {
+                    chatId = inner.getLong("chat_id", 0L);
+                    userId = inner.getLong("user_id", 0L);
+                }
+            }
+            Log.i(TAG, "telegram extras: chat_id=" + chatId + " user_id=" + userId);
+            if (chatId == 0L) return;
+            intent.putExtra("chatId", chatId);
+            if (userId != 0L) intent.putExtra("userId", userId);
+        } catch (Throwable t) {
+            Log.w(TAG, "copyChatExtras: " + t.getMessage());
+        }
+    }
+
     private static Intent getNotificationTargetIntent(Notification notif, String pkg) {
         try {
             PendingIntent pi = notif != null ? notif.contentIntent : null;
@@ -959,6 +1006,9 @@ public class MoreBubbleHookModule extends XposedModule {
             if (pkg != null && copy.getPackage() == null) {
                 copy.setPackage(pkg);
             }
+            // Telegram 的 BubbleActivity 用 chatId/userId(long) 定位会话，
+            // 而它的通知里把这些放在 bundle 的 chat_id/user_id 键上，这里做一次映射。
+            copyTelegramChatExtras(copy);
             return copy;
         } catch (Throwable t) {
             Log.w(TAG, "notification target intent: " + t.getMessage());
