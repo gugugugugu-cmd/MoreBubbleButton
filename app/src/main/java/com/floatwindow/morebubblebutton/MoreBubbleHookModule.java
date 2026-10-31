@@ -817,9 +817,13 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             final android.widget.TextView tv = (android.widget.TextView) manageButton;
 
-            // 左侧文案 + 右侧占位，让按钮自己长到能放下两段文字。
-            // 用不间断空格占位：右侧文字不真画出来，由 MirrorDrawable 画在右半区。
-            tv.setText("关闭小窗\u3000\u3000展开小窗");
+            // 按钮自身的文字必须清空：TextView 会先把 setText 的文字画一遍，MirrorDrawable 再
+            // 画一遍，同一个位置就出现重影。这里只保留等宽占位，让按钮尺寸够放两段文字，
+            // 真正的两段文案全部由 MirrorDrawable 画。
+            tv.setText("\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000\u3000");
+            tv.setSingleLine(true);
+            tv.setEllipsize(null);
+            tv.setGravity(android.view.Gravity.CENTER);
             tv.setOnClickListener(null);
             tv.setClickable(true);
 
@@ -924,14 +928,26 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             drawLabel(canvas, "展开小窗", mid, b.right, b.top, b.bottom);
             canvas.restoreToCount(save);
-            // 分隔线
-            canvas.drawLine(mid, b.top + b.height() * 0.28f, mid, b.bottom - b.height() * 0.28f, dividerPaint);
+            // 分隔线：顶部与底部都留白，看起来像两颗并排的胶囊而不是被一根划线劈开
+            int inset = Math.round(b.height() * 0.30f);
+            canvas.drawLine(mid, b.top + inset, mid, b.bottom - inset, dividerPaint);
         }
 
         private void drawLabel(android.graphics.Canvas canvas, String text, int left, int right, int top, int bottom) {
             android.graphics.Paint.FontMetrics fm = textPaint.getFontMetrics();
             float baseline = (top + bottom) / 2f - (fm.ascent + fm.descent) / 2f;
-            canvas.drawText(text, (left + right) / 2f, baseline, textPaint);
+            // 半区窄于文字时等比缩小，避免两段文字互相压到分隔线上
+            float avail = (right - left) * 0.86f;
+            float w = textPaint.measureText(text);
+            if (w > avail && w > 0) {
+                float scale = avail / w;
+                int save = canvas.save();
+                canvas.scale(scale, scale, (left + right) / 2f, baseline);
+                canvas.drawText(text, (left + right) / 2f, baseline, textPaint);
+                canvas.restoreToCount(save);
+            } else {
+                canvas.drawText(text, (left + right) / 2f, baseline, textPaint);
+            }
         }
 
         @Override public void setAlpha(int alpha) {
