@@ -34,6 +34,8 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 
 public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
+    /** 编译标记：日志里能直接看出跑的是哪一版 */
+    private static final String BUILD_TAG = "v1.22-telegram-forced";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -313,7 +315,7 @@ public class MoreBubbleHookModule extends XposedModule {
 
         installLandscapeLaunchBounds(cl);
 
-        Log.i(TAG, "All SystemUI hooks installed");
+        Log.i(TAG, "All SystemUI hooks installed, build=" + BUILD_TAG);
     }
 
     // ==================== 嵌入式友好的启动目标 ====================
@@ -328,10 +330,37 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final Map<String, String> sEmbeddableActivity = new ConcurrentHashMap<>();
 
     /** 把「应用主界面」换成它的嵌入式友好 Activity（若存在）。返回是否替换。 */
+    /**
+     * 明确知道要换的应用：主界面 singleTask、塞进 TaskView 会立刻 finish，
+     * 但自带嵌入式 Activity。写死比探测可靠 —— 探测依赖 ActivityInfo 字段，
+     * 而那个字段在部分系统版本里根本不存在。
+     */
+    private static final Map<String, String> EMBEDDABLE_OVERRIDES = new java.util.HashMap<>();
+    static {
+        EMBEDDABLE_OVERRIDES.put("org.telegram.messenger.web", "org.telegram.ui.BubbleActivity");
+        EMBEDDABLE_OVERRIDES.put("org.telegram.messenger", "org.telegram.ui.BubbleActivity");
+        EMBEDDABLE_OVERRIDES.put("org.telegram.plus", "org.telegram.ui.BubbleActivity");
+    }
+
     private static boolean preferEmbeddableActivity(Context ctx, Intent intent) {
-        if (intent == null) return false;
+        // 无条件打一条：证明这段代码在当前进程里真的跑到了
+        if (intent == null) {
+            Log.i(TAG, "bubble intent: null");
+            return false;
+        }
         String pkg = intent.getPackage();
+        Log.i(TAG, "bubble intent: pkg=" + pkg + " component=" + intent.getComponent());
         if (pkg == null) return false;
+
+        String forced = EMBEDDABLE_OVERRIDES.get(pkg);
+        if (forced != null) {
+            intent.setComponent(new ComponentName(pkg, forced));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                    | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+            Log.i(TAG, "bubble target(forced): " + pkg + " -> " + forced);
+            return true;
+        }
         if (intent.getComponent() != null
                 && !intent.getComponent().getClassName().equals(pkg)) {
             // 已经指定了具体界面（通知 contentIntent / 最近任务顶栈）时默认不覆盖，
