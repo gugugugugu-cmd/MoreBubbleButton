@@ -35,7 +35,7 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     /** 编译标记：日志里能直接看出跑的是哪一版 */
-    private static final String BUILD_TAG = "v1.22-telegram-forced";
+    private static final String BUILD_TAG = "v1.23-telegram-final";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -546,6 +546,26 @@ public class MoreBubbleHookModule extends XposedModule {
      */
     private static boolean expandAppBubbleA17(Object controller, Intent intent, UserHandle user, String reason) {
         try {
+            // 所有创建应用气泡的路径最后都会到这里 —— 在这里做一次最终确认，
+            // 上面几个入口（手势 / 通知 / 多任务）漏掉的也补上。
+            if (intent != null && intent.getPackage() != null) {
+                Context c = (Context) getFieldSystemUi(controller, "mContext");
+                String forced = EMBEDDABLE_OVERRIDES.get(intent.getPackage());
+                if (forced != null) {
+                    boolean already = intent.getComponent() != null
+                            && forced.equals(intent.getComponent().getClassName());
+                    if (!already) {
+                        intent.setComponent(new ComponentName(intent.getPackage(), forced));
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                                | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                                | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+                        Log.i(TAG, "bubble target(final): " + intent.getPackage() + " -> " + forced
+                                + " (" + reason + ")");
+                    } else {
+                        Log.i(TAG, "bubble target(final): already " + forced + " (" + reason + ")");
+                    }
+                }
+            }
             ClassLoader cl = controller.getClass().getClassLoader();
             Class<?> bubbleCls = cl.loadClass("com.android.wm.shell.bubbles.Bubble");
             Class<?> dataCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleData");
