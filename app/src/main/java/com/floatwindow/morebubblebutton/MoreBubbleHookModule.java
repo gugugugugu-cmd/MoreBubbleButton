@@ -1347,6 +1347,66 @@ public class MoreBubbleHookModule extends XposedModule {
         row.setLayoutParams(lp);
     }
 
+    /**
+     * 跟随模式：直接加到 action_buttons 末尾（跟随系统原有按钮的位置）。
+     */
+    @SuppressLint("DiscouragedApi")
+    private void addToActionButtons(ViewGroup actionsParent, Button btn,
+            android.content.res.Resources res, String pkg) {
+        // 之前在第二行 → 先把那一行拆掉，避免两颗按钮同时出现
+        if (sSecondRow != null) {
+            if (bubbleButton != null && bubbleButton.getParent() == sSecondRow) {
+                sSecondRow.removeView(bubbleButton);
+            }
+            if (sSecondRow.getParent() instanceof ViewGroup) {
+                ((ViewGroup) sSecondRow.getParent()).removeView(sSecondRow);
+            }
+            sSecondRow = null;
+        }
+
+        int abId = res.getIdentifier("action_buttons", "id", pkg);
+        LinearLayout actionButtons = (LinearLayout) actionsParent.findViewById(abId);
+        if (actionButtons == null) return;
+
+        // 去重
+        for (int i = 0; i < actionButtons.getChildCount(); i++) {
+            View child = actionButtons.getChildAt(i);
+            if (child.getTag() != null && "bubble_button".equals(child.getTag().toString())) {
+                bubbleButton = child;
+                return;
+            }
+        }
+
+        ViewGroup.MarginLayoutParams mlp = new ViewGroup.MarginLayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        int spId = res.getIdentifier("overview_actions_button_spacing", "dimen", pkg);
+        if (spId != 0) mlp.setMarginStart(res.getDimensionPixelSize(spId));
+        btn.setLayoutParams(mlp);
+        actionButtons.addView(btn);
+        bubbleButton = btn;
+
+        // 捕获 RecentsView（从 actionsParent 的 parent 链查找）
+        if (recentsViewInstance == null) {
+            try {
+                Class<?> rvCls = mLauncherClassLoader.loadClass(
+                        "com.android.quickstep.views.RecentsView");
+                View cur = actionsParent;
+                while (cur != null) {
+                    if (rvCls.isInstance(cur)) {
+                        recentsViewInstance = cur;
+                        Log.i(TAG, "Captured RecentsView in follow mode: " + cur);
+                        break;
+                    }
+                    cur = (cur.getParent() instanceof View) ? (View) cur.getParent() : null;
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "Capture RecentsView failed: " + t.getMessage());
+            }
+        }
+
+        Log.i(TAG, "Bubble button added to action_buttons (follow mode)");
+    }
+
     private boolean isClearAllButton(View child) {
         try { return mLauncherClassLoader.loadClass("com.android.quickstep.views.ClearAllButton").isInstance(child); }
         catch (Throwable t) { return false; }
