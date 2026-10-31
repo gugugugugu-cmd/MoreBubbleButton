@@ -869,6 +869,51 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
+    /** 复制 mManageButton：优先用官方 AlphaOptimizedButton 实例，克隆背景/文案/尺寸；否则用按钮通用拷贝。 */
+    private static View cloneManageButton(View manageButton) {
+        try {
+            Context ctx = manageButton.getContext();
+            Class<?> aob = ctx.getClassLoader().loadClass("com.android.wm.shell.AlphaOptimizedButton");
+            Object cloned = aob.getConstructor(Context.class).newInstance(ctx);
+            if (cloned instanceof View) {
+                View cv = (View) cloned;
+                cv.setBackground(manageButton.getBackground());
+                if (manageButton instanceof android.widget.TextView && cv instanceof android.widget.TextView) {
+                    android.widget.TextView src = (android.widget.TextView) manageButton;
+                    android.widget.TextView tv = (android.widget.TextView) cv;
+                    tv.setText(src.getText());
+                    tv.setTextColor(src.getTextColors());
+                    tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, src.getTextSize());
+                }
+                LayoutParams mp = manageButton.getLayoutParams();
+                if (mp != null) { cv.setLayoutParams(new LayoutParams(mp.width, mp.height)); }
+                Log.i(TAG, "corner action: cloned AlphaOptimizedButton OK");
+                return cv;
+            }
+        } catch (Throwable alphaErr) {
+            Log.w(TAG, "corner action: AlphaOptimizedButton clone unavailable: "
+                    + alphaErr.getMessage() + "; falling back to generic copy");
+        }
+        try {
+            Context ctx = manageButton.getContext();
+            Button b = new Button(ctx);
+            b.setBackground(manageButton.getBackground());
+            if (manageButton instanceof android.widget.TextView) {
+                android.widget.TextView src = (android.widget.TextView) manageButton;
+                b.setText(src.getText());
+                b.setTextColor(src.getTextColors());
+                b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, src.getTextSize());
+            }
+            LayoutParams mp = manageButton.getLayoutParams();
+            if (mp != null) { b.setLayoutParams(new LayoutParams(mp.width, mp.height)); }
+            Log.i(TAG, "corner action: cloned generic Button OK");
+            return b;
+        } catch (Throwable genericErr) {
+            Log.w(TAG, "corner action: generic clone failed: " + genericErr.getMessage(), genericErr);
+            return null;
+        }
+    }
+
     /**
      * 容器接替官方按钮在父容器里的位置，但不要原来的 margin：容器自身不参与测量，
      * 单独一行的负 margin / topMargin 只会把两颗按钮拖歪。
