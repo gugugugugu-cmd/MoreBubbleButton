@@ -258,7 +258,7 @@ public class MoreBubbleHookModule extends XposedModule {
         //    在其右侧克隆一颗同款按钮，点击 = 「全屏展开」(moveTaskViewToFullscreen 反射链)。
         //    官方 updateManageButtonIfExists 每次调用都会 inflate -> addView -> setVisibility
         //    -> setOnClickListener -> post，因此 proceed 之后 mManageButton 已在 this 的 child 列表里，
-        //    可直接读取并重设；克隆按钮用横向容器挂到底部，保证一左一右。
+        //    可直接读取并重设；两颗按钮放进同一个 SyncCornerLayout，同一级、同一动画。
         try {
             Class<?> bevCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleExpandedView");
             hook(bevCls.getMethod("updateManageButtonIfExists")).intercept(chain -> {
@@ -268,6 +268,8 @@ public class MoreBubbleHookModule extends XposedModule {
                     f.setAccessible(true);
                     Object btn = f.get(chain.getThisObject());
                     if (btn instanceof View) {
+                        // 两颗按钮同父同层（见 SyncCornerLayout），官方对「管理」按钮行的位移
+                        // （上滑 / 展开动画）会同时带上右侧按钮。
                         applyCornerButtonActions(chain.getThisObject(), (View) btn);
                     } else {
                         Log.w(TAG, "corner action: mManageButton not a View; skipped");
@@ -779,23 +781,26 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final int CORNER_ROW_TAG = 0x4d4f5245; // "MORE"
 
     /**
-     * 改造气泡小窗底部按钮：官方 mManageButton 留在原位（垂直 LinearLayout 的最后一个 child，
-     * 也就是左下角）只改文案与点击行为 = 「关闭小窗」；再克隆一颗同款按钮，用
-     * layout_gravity=end 挂在同一父容器里 = 右下角「展开小窗」。
+     * 改造气泡小窗底部按钮：官方 mManageButton 只改文案与点击 = 「关闭小窗」；再克隆一颗
+     * 同款按钮 = 「展开小窗」。两颗按钮放进同一个 {@link SyncCornerLayout}，成为同一个父 View 的
+     * 两个 child —— 官方对小窗做的位移（上滑手势、展开/收起动画）推的是 mManageButton 这一行，
+     * 容器跟着走，右侧按钮因此与左侧按钮永远同一级、同一个平移，不会再固定在原位。
      *
-     * 关键：绝不把官方按钮搬离原父容器。官方 updateManageButtonIfExists 每次都会
-     * removeView+重新 inflate+addView，一旦我们把它移进自建容器，下一轮官方就把它摘走，
-     * 我们的容器里留下的是脱离视图树的旧实例 → 点击失效、行为错乱。
+     * <p>为什么不再直接 addView 到 BubbleExpandedView：那是垂直 LinearLayout，多一个 child 就多一行，
+     * 自造按钮只能靠负 topMargin 硬叠、再 post 里补 translationY —— 布局尺寸一没定下来就错位，
+     * 这就是之前对不齐、动画上脱节的根因。
+     *
+     * <p>官方 updateManageButtonIfExists 每轮 removeView 旧按钮 → 重新 inflate → addView 新按钮。
+     * 因此容器每轮都先从父容器摘掉（不摘就会越堆越多），再 bind 新按钮；官方 addView 时把容器插回，
+     * 容器不参与测量、不加高度、不加负 margin。
      */
     private static void applyCornerButtonActions(Object expandedView, View manageButton) {
         try {
-            // The official method can reuse the same BubbleExpandedView while switching
-            // between an app bubble and the overflow drawer. Remove stale clones first.
+            // 官方方法可能复用同一个 BubbleExpandedView 在应用气泡和 overflow 抽屉间切换，
+            // 先清掉上一轮的容器。
             removeCornerButtonClones(expandedView, manageButton);
 
-            // The overflow drawer has no task to close or expand. mIsOverflow is the
-            // primary flag; getBubbleKey() and mBubble cover builds where that flag is
-            // not updated before updateManageButtonIfExists() runs.
+            // overflow 抽屉没有可关闭/展开的任务。
             Object isOverflow = getField(expandedView, "mIsOverflow");
             Object bubble = getField(expandedView, "mBubble");
             Object bubbleKey = invoke(expandedView, "getBubbleKey");
@@ -812,142 +817,107 @@ public class MoreBubbleHookModule extends XposedModule {
                 ((android.widget.TextView) manageButton).setText("关闭小窗");
             }
             manageButton.setOnClickListener(v -> dismissBubbleAsUserGesture(expandedView));
-            Log.i(TAG, "corner action: left manage button -> dismiss as USER_GESTURE");
 
-            // 右侧克隆同款按钮（右下角）：点击 = 该气泡任务全屏展开。
+            ViewGroup parent = manageButton.getParent() instanceof ViewGroup
+                    ? (ViewGroup) manageButton.getParent()
+                    : (expandedView instanceof ViewGroup ? (ViewGroup) expandedView : null);
+            if (parent == null) {
+                Log.w(TAG, "corner action: no parent for manage button; row not added");
+                return;
+            }
+            int index = parent.indexOfChild(manageButton);
+
+            // 右侧按钮的文字尺寸用隐藏模板量出来（不改左侧按钮，免得左侧宽度被撑变）。
+            View template = cloneManageButton(manageButton);
+            if (template != null) {
+                if (template instanceof android.widget.TextView) {
+                    ((android.widget.TextView) template).setText("展开小窗");
+                }
+                template.measure(View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                        View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+            }
             View clone = cloneManageButton(manageButton);
             if (clone == null) {
-                Log.w(TAG, "corner action: clone button failed; only collapse button installed");
+                Log.w(TAG, "corner action: clone button failed; only close button installed");
                 return;
             }
             if (clone instanceof android.widget.TextView) {
                 ((android.widget.TextView) clone).setText("展开小窗");
             }
+            if (template != null) {
+                clone.setMinimumWidth(template.getMeasuredWidth());
+            }
             clone.setOnClickListener(v -> expandBubbleFullscreen(expandedView));
             clone.setTag(CORNER_ROW_TAG, Boolean.TRUE);
-            addCloneBesideManageButton(expandedView, manageButton, clone);
-            Log.i(TAG, "corner action: cloned right button -> fullscreen");
+
+            // 搬进容器：索引沿用官方按钮原来的位置，容器接替它占住那一行
+            // （父容器是 FrameLayout 时就是相同的 top / gravity）。
+            parent.removeView(manageButton);
+            SyncCornerLayout row = new SyncCornerLayout(parent.getContext());
+            row.setTag(CORNER_ROW_TAG, Boolean.TRUE);
+            ViewGroup.LayoutParams lp = cloneParentParams(manageButton.getLayoutParams());
+            if (index >= 0 && index <= parent.getChildCount()) {
+                parent.addView(row, index, lp);
+            } else {
+                parent.addView(row, lp);
+            }
+            row.bind(manageButton, template, clone);
+            Log.i(TAG, "corner action: close + fullscreen buttons share row "
+                    + parent.getClass().getSimpleName());
         } catch (Throwable t) {
             Log.w(TAG, "corner action install failed: " + t.getMessage(), t);
         }
     }
 
-    /** Remove clones from either the expanded view or the manage button's parent. */
-    private static void removeCornerButtonClones(Object expandedView, View manage) {
-        java.util.ArrayList<ViewGroup> candidates = new java.util.ArrayList<>();
-        if (expandedView instanceof ViewGroup) candidates.add((ViewGroup) expandedView);
-        if (manage != null && manage.getParent() instanceof ViewGroup) {
-            ViewGroup parent = (ViewGroup) manage.getParent();
-            if (!candidates.contains(parent)) candidates.add(parent);
-        }
-        for (ViewGroup group : candidates) {
-            java.util.ArrayList<View> remove = new java.util.ArrayList<>();
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View child = group.getChildAt(i);
-                if (Boolean.TRUE.equals(child.getTag(CORNER_ROW_TAG))) remove.add(child);
-            }
-            for (View child : remove) group.removeView(child);
-        }
-    }
-
     /**
-     * Add the clone to the same parent without increasing the vertical stack height.
-     * Android 17's parent is vertical, so a normal addView puts the clone on a new
-     * row and below the visible window. Overlaying the clone at the manage button's
-     * top and aligning it to END keeps both controls in the existing bottom row.
+     * 容器接替官方按钮在父容器里的位置，但不要原来的 margin：容器自身不参与测量，
+     * 单独一行的负 margin / topMargin 只会把两颗按钮拖歪。
      */
-    private static void addCloneBesideManageButton(Object expandedView, View manage, View clone) {
-        try {
-            ViewGroup parent = manage != null && manage.getParent() instanceof ViewGroup
-                    ? (ViewGroup) manage.getParent()
-                    : (expandedView instanceof ViewGroup ? (ViewGroup) expandedView : null);
-            if (parent == null) {
-                Log.w(TAG, "corner action: no parent for clone; row not added");
-                return;
-            }
-            android.view.ViewGroup.LayoutParams base = manage.getLayoutParams();
-            int width = base != null ? base.width : LayoutParams.WRAP_CONTENT;
-            int height = base != null ? base.height : LayoutParams.WRAP_CONTENT;
-            FrameLayout.LayoutParams overlay = new FrameLayout.LayoutParams(width, height,
-                    android.view.Gravity.END | android.view.Gravity.TOP);
-            int top = manage.getTop();
-            if (top > 0) overlay.topMargin = top;
-            overlay.setMarginEnd(base instanceof LinearLayout.LayoutParams
-                    ? ((LinearLayout.LayoutParams) base).getMarginEnd() : 0);
-            if (parent instanceof FrameLayout) {
-                parent.addView(clone, overlay);
-            } else {
-                // A vertical LinearLayout cannot overlay children; use its existing
-                // height and pull the clone back onto the manage row.
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(width, height);
-                if (base instanceof LinearLayout.LayoutParams) {
-                    LinearLayout.LayoutParams mlp = (LinearLayout.LayoutParams) base;
-                    lp.setMarginStart(mlp.getMarginStart());
-                    lp.setMarginEnd(mlp.getMarginEnd());
-                    lp.bottomMargin = mlp.bottomMargin;
-                    lp.topMargin = -(height > 0 ? height : manage.getMeasuredHeight());
-                } else {
-                    lp.topMargin = -(height > 0 ? height : manage.getMeasuredHeight());
-                }
-                lp.gravity = android.view.Gravity.END;
-                parent.addView(clone, lp);
-                // The clone is measured after insertion. Correct its baseline once
-                // the official button has a real laid-out position.
-                clone.post(() -> {
-                    int delta = manage.getTop() - clone.getTop();
-                    if (delta != 0) clone.setTranslationY(delta);
-                });
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "corner action: add clone failed: " + t.getMessage(), t);
+    private static ViewGroup.LayoutParams cloneParentParams(ViewGroup.LayoutParams src) {
+        ViewGroup.LayoutParams lp;
+        if (src instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams f = new FrameLayout.LayoutParams((FrameLayout.LayoutParams) src);
+            f.setMargins(0, 0, 0, 0);
+            lp = f;
+        } else if (src instanceof LinearLayout.LayoutParams) {
+            LinearLayout.LayoutParams l = new LinearLayout.LayoutParams((LinearLayout.LayoutParams) src);
+            l.setMargins(0, 0, 0, 0);
+            lp = l;
+        } else {
+            lp = new ViewGroup.LayoutParams(
+                    src != null ? src.width : ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
         }
+        // 高度交给父容器决定：容器不参与测量，onLayout 里只把两颗按钮排到容器当前范围。
+        lp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+        return lp;
     }
 
-    /** 复制 mManageButton：优先用官方 AlphaOptimizedButton 实例，克隆背景/文案/等宽；否则用按钮通用拷贝。 */
-    private static View cloneManageButton(View manageButton) {
-        try {
-            Context ctx = manageButton.getContext();
-            ClassLoader cl = ctx.getClassLoader();
-            Class<?> aob = cl.loadClass("com.android.wm.shell.AlphaOptimizedButton");
-            Object cloned = aob.getConstructor(Context.class).newInstance(ctx);
-            if (cloned instanceof View) {
-                View cv = (View) cloned;
-                cv.setBackground(manageButton.getBackground());
-                CharSequence text = manageButton instanceof android.widget.TextView
-                        ? ((android.widget.TextView) manageButton).getText() : null;
-                if (text != null && (cv instanceof android.widget.TextView)) {
-                    android.widget.TextView tv = (android.widget.TextView) cv;
-                    tv.setText(text);
-                    tv.setTextColor(((android.widget.TextView) manageButton).getTextColors());
-                    tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
-                            ((android.widget.TextView) manageButton).getTextSize());
-                }
-                LayoutParams mp = manageButton.getLayoutParams();
-                if (mp != null) { cv.setLayoutParams(new LayoutParams(mp.width, mp.height)); }
-                Log.i(TAG, "corner action: cloned AlphaOptimizedButton OK");
-                return cv;
-            }
-        } catch (Throwable alphaErr) {
-            Log.w(TAG, "corner action: AlphaOptimizedButton clone unavailable: "
-                    + alphaErr.getMessage() + "; falling back to generic copy");
+    /** 移除上一轮的按钮容器。 */
+    private static void removeCornerButtonClones(Object expandedView, View manage) {
+        java.util.ArrayList<ViewGroup> parents = new java.util.ArrayList<>();
+        if (manage != null && manage.getParent() instanceof ViewGroup) {
+            parents.add((ViewGroup) manage.getParent());
         }
-        try {
-            Context ctx = manageButton.getContext();
-            android.widget.Button b = new android.widget.Button(ctx);
-            b.setBackground(manageButton.getBackground());
-            if (manageButton instanceof android.widget.TextView) {
-                b.setText(((android.widget.TextView) manageButton).getText());
-                b.setTextColor(((android.widget.TextView) manageButton).getTextColors());
-                b.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
-                        ((android.widget.TextView) manageButton).getTextSize());
+        if (expandedView instanceof ViewGroup && !parents.contains(expandedView)) {
+            parents.add((ViewGroup) expandedView);
+        }
+        for (ViewGroup parent : parents) {
+            java.util.ArrayList<View> remove = new java.util.ArrayList<>();
+            for (int i = 0; i < parent.getChildCount(); i++) {
+                View child = parent.getChildAt(i);
+                if (child instanceof SyncCornerLayout || Boolean.TRUE.equals(child.getTag(CORNER_ROW_TAG))) {
+                    remove.add(child);
+                }
             }
-            LayoutParams mp = manageButton.getLayoutParams();
-            if (mp != null) { b.setLayoutParams(new LayoutParams(mp.width, mp.height)); }
-            Log.i(TAG, "corner action: cloned generic Button OK");
-            return b;
-        } catch (Throwable genericErr) {
-            Log.w(TAG, "corner action: generic clone failed: " + genericErr.getMessage(), genericErr);
-            return null;
+            for (View child : remove) {
+                // 先摘按钮再摘容器：官方新一轮会重新给 mManageButton 赋值，老按钮留在容器里只是垃圾。
+                if (child instanceof SyncCornerLayout) {
+                    SyncCornerLayout row = (SyncCornerLayout) child;
+                    if (row.primary != null && row.primary.getParent() == row) row.removeView(row.primary);
+                }
+                parent.removeView(child);
+            }
         }
     }
 
