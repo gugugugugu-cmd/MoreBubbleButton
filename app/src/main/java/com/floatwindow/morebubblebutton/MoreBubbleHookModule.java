@@ -798,7 +798,7 @@ public class MoreBubbleHookModule extends XposedModule {
         try {
             // 官方方法可能复用同一个 BubbleExpandedView 在应用气泡和 overflow 抽屉间切换，
             // 先清掉上一轮的容器。
-            removeCornerButtonClones(expandedView, manageButton);
+            dumpCornerTree(expandedView, manageButton, "before");
 
             // overflow 抽屉没有可关闭/展开的任务。
             Object isOverflow = getField(expandedView, "mIsOverflow");
@@ -850,19 +850,27 @@ public class MoreBubbleHookModule extends XposedModule {
             clone.setOnClickListener(v -> expandBubbleFullscreen(expandedView));
             clone.setTag(CORNER_ROW_TAG, Boolean.TRUE);
 
-            // 搬进容器：索引沿用官方按钮原来的位置，容器接替它占住那一行
-            // （父容器是 FrameLayout 时就是相同的 top / gravity）。
-            parent.removeView(manageButton);
-            SyncCornerLayout row = new SyncCornerLayout(parent.getContext());
-            row.setTag(CORNER_ROW_TAG, Boolean.TRUE);
-            ViewGroup.LayoutParams lp = cloneParentParams(manageButton.getLayoutParams());
-            // 容器接替官方按钮那一行，并带上 bubble_expanded_view 这个 id：官方有代码按它
-            // findViewById 找底部容器，id 丢了容器就会变成一棵“没人管”的子树。
-            row.setId(expandedViewId(expandedView, manageButton));
-            if (index >= 0 && index <= parent.getChildCount()) {
-                parent.addView(row, index, lp);
+            // 放进容器：官方按钮只换实例、不换父容器，所以容器也复用同一个 —— 每次把树拆掉重建
+            // 会让父容器在重建过程中丢样式、丢前后兄弟，容器变得不可见。
+            SyncCornerLayout row = findCornerRow(parent);
+            if (row == null) {
+                parent.removeView(manageButton);
+                row = new SyncCornerLayout(parent.getContext());
+                row.setTag(CORNER_ROW_TAG, Boolean.TRUE);
+                ViewGroup.LayoutParams lp = cloneParentParams(manageButton.getLayoutParams());
+                // 容器接替官方按钮那一行，并带上 bubble_expanded_view 这个 id：官方有代码按它
+                // findViewById 找底部容器，id 丢了容器就会变成一棵“没人管”的子树。
+                row.setId(expandedViewId(expandedView, manageButton));
+                if (index >= 0 && index <= parent.getChildCount()) {
+                    parent.addView(row, index, lp);
+                } else {
+                    parent.addView(row, lp);
+                }
             } else {
-                parent.addView(row, lp);
+                row.removeAllViews();
+                ViewGroup.LayoutParams lp = row.getLayoutParams();
+                if (lp != null) lp.width = manageButton.getLayoutParams() != null
+                        ? manageButton.getLayoutParams().width : ViewGroup.LayoutParams.MATCH_PARENT;
             }
             row.bind(manageButton, template, clone);
             Log.i(TAG, "corner action: close + fullscreen buttons share row "
@@ -977,31 +985,88 @@ public class MoreBubbleHookModule extends XposedModule {
         return lp;
     }
 
-    /** 移除上一轮的按钮容器。 */
+    /** 在同一父容器里找已经挂好的按钮容器。 */
+    private static SyncCornerLayout findCornerRow(ViewGroup parent) {
+        for (int i = 0; i < parent.getChildCount(); i++) {
+            View child = parent.getChildAt(i);
+            if (child instanceof SyncCornerLayout) return (SyncCornerLayout) child;
+        }
+        return null;
+    }
+
+    /**
+     * 把官方按钮那一棵树的形状打进日志：父容器类型、父容器的父容器、每个兄弟 View 的
+     * 类型 / id / 可见性 / 尺寸，以及官方按钮自己的可见性 / 布局参数。
+     * 只在第一次遇到某棵树时打（同一棵树不重复刷屏），一次日志就能看出按钮为什么不见。
+     */
+    private static final Map<String, Long> sDumpedTrees = new ConcurrentHashMap<>();
+
+    private static void dumpCornerTree(Object expandedView, View manageButton, String when) {
+        try {
+            ViewGroup parent = manageButton.getParent() instanceof ViewGroup
+                    ? (ViewGroup) manageButton.getParent() : null;
+            String key = (parent != null ? System.identityHashCode(parent) : 0)
+                    + ":" + System.identityHashCode(manageButton);
+            if (sDumpedTrees.containsKey(key)) return;
+            sDumpedTrees.put(key, System.currentTimeMillis());
+            StringBuilder sb = new StringBuilder();
+            sb.append("corner tree[").append(when).append("] manage=")
+                    .append(manageButton.getClass().getSimpleName())
+                    .append(" vis=").append(manageButton.getVisibility())
+                    .append(" id=0x").append(Integer.toHexString(manageButton.getId()));
+            ViewGroup.LayoutParams mlp = manageButton.getLayoutParams();
+            if (mlp != null) {
+                sb.append(" lp=").append(mlp.getClass().getSimpleName())
+                        .append('(').append(mlp.width).append('x').append(mlp.height).append(')');
+            }
+            if (parent != null) {
+                sb.append(" parent=").append(parent.getClass().getSimpleName())
+                        .append(" vis=").append(parent.getVisibility())
+                        .append(" id=0x").append(Integer.toHexString(parent.getId()))
+                        .append(" children=").append(parent.getChildCount());
+                for (int i = 0; i < parent.getChildCount(); i++) {
+                    View c = parent.getChildAt(i);
+                    sb.append(" [").append(i).append(':').append(c.getClass().getSimpleName())
+                            .append(" id=0x").append(Integer.toHexString(c.getId()))
+                            .append(" vis=").append(c.getVisibility());
+                    ViewGroup.LayoutParams lp = c.getLayoutParams();
+                    if (lp != null) sb.append(' ').append(lp.width).append('x').append(lp.height);
+                    sb.append(']');
+                }
+                if (parent.getParent() instanceof ViewGroup) {
+                    sb.append(" grandparent=").append(parent.getParent().getClass().getSimpleName());
+                }
+                sb.append(" lineHeight(parent)=").append(parent.getHeight());
+            }
+            Log.i(TAG, sb.toString());
+        } catch (Throwable t) {
+            Log.i(TAG, "corner tree dump failed: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 换气泡 / 切到 overflow 抽屉时，清掉挂在这棵树上的旧容器。
+     *
+     * <p>唯一不能动的是「官方按钮现在就在容器里」的情况：那时容器正接替着它的位置，
+     * 拆掉就等于把按钮从视图树上摘下来（下一次官方只换 mManageButton 的引用，不会再 addView）。
+     */
     private static void removeCornerButtonClones(Object expandedView, View manage) {
         java.util.ArrayList<ViewGroup> parents = new java.util.ArrayList<>();
-        if (manage != null && manage.getParent() instanceof ViewGroup) {
+        if (expandedView instanceof ViewGroup) parents.add((ViewGroup) expandedView);
+        if (manage != null && manage.getParent() instanceof ViewGroup
+                && !parents.contains(manage.getParent())) {
             parents.add((ViewGroup) manage.getParent());
-        }
-        if (expandedView instanceof ViewGroup && !parents.contains(expandedView)) {
-            parents.add((ViewGroup) expandedView);
         }
         for (ViewGroup parent : parents) {
             java.util.ArrayList<View> remove = new java.util.ArrayList<>();
             for (int i = 0; i < parent.getChildCount(); i++) {
                 View child = parent.getChildAt(i);
-                if (child instanceof SyncCornerLayout || Boolean.TRUE.equals(child.getTag(CORNER_ROW_TAG))) {
-                    remove.add(child);
-                }
+                if (!(child instanceof SyncCornerLayout)) continue;
+                SyncCornerLayout row = (SyncCornerLayout) child;
+                if (row.primary != null && row.primary.getParent() == row) continue;
+                remove.add(child);
             }
-            for (View child : remove) {
-                // 先摘按钮再摘容器：官方新一轮会重新给 mManageButton 赋值，老按钮留在容器里只是垃圾。
-                if (child instanceof SyncCornerLayout) {
-                    SyncCornerLayout row = (SyncCornerLayout) child;
-                    if (row.primary != null && row.primary.getParent() == row) row.removeView(row.primary);
-                }
-                parent.removeView(child);
-            }
+            for (View child : remove) parent.removeView(child);
         }
     }
 

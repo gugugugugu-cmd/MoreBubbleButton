@@ -8,19 +8,20 @@ import android.view.ViewGroup;
  * 气泡小窗底部按钮容器：「关闭小窗」（左）与「展开小窗」（右）放进同一个普通
  * {@link ViewGroup}，{@link #onLayout} 每次把两颗按钮排到相对本容器的最新位置。
  *
- * <p>为什么要容器：直接 addView 到 BubbleExpandedView（垂直 LinearLayout）时，多一个 child 就多一行，
- * 自造按钮只能靠负 topMargin 硬叠、再 post 里补 translationY —— 布局一没定下来就错位，
- * 而且官方动画只推「管理」按钮那一行，右侧按钮会停在原地。两颗按钮共用一个父 View，
- * 官方的位移 / 显隐 / 展开动画都会同时带上它们。
+ * <p>为什么要容器：两颗按钮必须同一个父 View，官方对小窗做的位移（上滑手势、展开/收起动画）
+ * 才会同时带上它们，右侧按钮不会停在原地。
  *
- * <p>为什么不用自定义测量、布局：容器会被父容器按官方的 measure 规则测量，并且可能被随时
- * addView / removeView（官方 updateOverflow、setManageButtonVisibility 都会动它的子 View）。
- * 这里只重写 onLayout，测量完全交给 ViewGroup 默认实现，避免在布局流程里出任何幺蛾子。
+ * <p>为什么还要自己量：官方 {@code BubbleExpandedView} 是垂直 LinearLayout，而 {@code addView}
+ * 传进去的布局参数不一定是 {@code LinearLayout.LayoutParams}。线性布局按子 View 的「竖直占位」
+ * 累加高度，参数类型不对时它拿不到高度，那一行就被算成 0 —— 两颗按钮一起消失。所以容器自己
+ * 按「两颗按钮里最高的那颗」量出高度并往父级报回去，不指望父级给。
  *
- * <p>为什么必须 setId(bubble_expanded_view)：官方不少代码按这个 id 找底部容器
- * （{@code findViewById(R.id.bubble_expanded_view)}），历史上真的有过容器内部堆叠的版本。
- * 容器现在接替了「管理按钮那一行」在 BubbleExpandedView 里的位置，把同一个 id 带过来，
- * 父级的 findViewById 依然能找到容器 —— 找不到时官方会把右侧按钮当成自己要显示/隐藏的对象。
+ * <p>为什么不靠子 View 的布局参数：官方 {@code mManageButton} 的布局参数来自其它父容器，
+ * 直接塞进本容器可能类型对不上，所以容器自己量、自己报高度，子 View 的布局参数一律不碰。
+ *
+ * <p>为什么必须 setId(bubble_expanded_view)：官方有代码按这个 id 找底部容器
+ * （{@code findViewById(R.id.bubble_expanded_view)}），容器接替了「管理按钮那一行」的位置，
+ * id 跟着带过来，父级 findViewById 依然能找到它。
  */
 class SyncCornerLayout extends ViewGroup {
     View primary;   // 官方 mManageButton（关闭小窗）
@@ -48,6 +49,23 @@ class SyncCornerLayout extends ViewGroup {
         requestLayout();
     }
 
+    /**
+     * 父级是 LinearLayout 时，子 View 高度 WRAP_CONTENT 会被「两次测量」撑满剩余空间：
+     * 第一次量完后 LinearLayout 给自己置 PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT，下一次测量就用
+     * heightMeasureSpec 再量一遍。容器里没有这个约束，所以量完给子 View 补上同一行为，
+     * 子 View 的布局参数保持最普通的那一种，不带任何自定义类型。
+     */
+    private static void markMeasuredOnce(View v) {
+        try {
+            java.lang.reflect.Field f = View.class.getDeclaredField("mPrivateFlags3");
+            f.setAccessible(true);
+            int flags = (int) f.get(v);
+            f.setInt(v, flags | 0x8); // View.PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT
+        } catch (Throwable ignored) {
+            // 反射受限时就算了：最多是子 View 在极窄情况下被撑高，不影响显隐。
+        }
+    }
+
     int padStart() { return dp(20); }
     int padEnd() { return dp(14); }
 
@@ -57,6 +75,20 @@ class SyncCornerLayout extends ViewGroup {
         if (primary != null) h = Math.max(h, primary.getMeasuredHeight());
         if (tertiary != null) h = Math.max(h, tertiary.getMeasuredHeight());
         return h;
+    }
+
+    @Override
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        int width = MeasureSpec.getSize(widthMeasureSpec);
+        int wChild = MeasureSpec.makeMeasureSpec(width, MeasureSpec.AT_MOST);
+        int hChild = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED);
+        if (primary != null) { primary.measure(wChild, hChild); markMeasuredOnce(primary); }
+        if (secondary != null) secondary.measure(wChild, hChild);
+        if (tertiary != null) { tertiary.measure(wChild, hChild); markMeasuredOnce(tertiary); }
+        // 高度自己定：父级给的是 LinearLayout 的剩余空间，不能用。
+        int height = getPaddingTop() + rowHeight() + getPaddingBottom();
+        setMeasuredDimension(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
     }
 
     @Override
