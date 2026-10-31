@@ -35,7 +35,9 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     /** 编译标记：日志里能直接看出跑的是哪一版 */
-    private static final String BUILD_TAG = "v1.28-telegram-diag";
+    /** 气泡底部按钮（诊断显示用） */
+    private static volatile View sLastCornerButton;
+    private static final String BUILD_TAG = "v1.29-diag-on-button";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -398,10 +400,30 @@ public class MoreBubbleHookModule extends XposedModule {
 
 
 
+
+    /** 诊断用：把状态直接写进气泡底部按钮，不依赖 logcat。 */
+    private static volatile String sLastDiag = "";
+
+    private static void showDiag(String tag) {
+        sLastDiag = tag;
+        Log.i(TAG, "DIAG " + tag);
+        try {
+            android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+            h.post(() -> {
+                try {
+                    Object btn = sLastCornerButton;
+                    if (btn instanceof android.widget.TextView) {
+                        ((android.widget.TextView) btn).setText("诊断:" + tag);
+                    }
+                } catch (Throwable ignored) {}
+            });
+        } catch (Throwable ignored) {}
+    }
+
     /** 把 Bubble 的启动目标换成嵌入式 Activity（mIntent + mPendingIntent 都换）。 */
     private static void retargetBubble(Context ctx, Object bubble, String from) {
-        if (ctx == null) { Log.i(TAG, "retarget(" + from + "): ctx is null, skip"); return; }
-        if (bubble == null) { Log.i(TAG, "retarget(" + from + "): bubble is null, skip"); return; }
+        if (ctx == null) { Log.i(TAG, "retarget(" + from + "): ctx is null, skip"); showDiag("ctx=null"); return; }
+        if (bubble == null) { Log.i(TAG, "retarget(" + from + "): bubble is null, skip"); showDiag("bubble=null"); return; }
         Intent currentIntent = (Intent) getField(bubble, "mIntent");
         String pkg = (String) getField(bubble, "mPackageName");
         if (pkg == null && currentIntent != null) pkg = currentIntent.getPackage();
@@ -409,8 +431,8 @@ public class MoreBubbleHookModule extends XposedModule {
         Log.i(TAG, "retarget(" + from + "): pkg=" + pkg + " forced=" + forced
                 + " intent=" + (currentIntent != null)
                 + " keys=" + EMBEDDABLE_OVERRIDES.keySet());
-        if (pkg == null) return;
-        if (forced == null) return;
+        if (pkg == null) { showDiag("pkg=null"); return; }
+        if (forced == null) { showDiag("no-map:" + pkg); return; }
 
         Intent target = new Intent(currentIntent != null ? currentIntent : new Intent());
         target.setComponent(new ComponentName(pkg, forced));
@@ -423,6 +445,7 @@ public class MoreBubbleHookModule extends XposedModule {
                     android.app.PendingIntent.FLAG_MUTABLE
                             | android.app.PendingIntent.FLAG_UPDATE_CURRENT));
             Log.i(TAG, "retargeted(" + from + "): " + pkg + " -> " + forced);
+            showDiag("OK:" + forced.substring(forced.lastIndexOf('.') + 1));
         } catch (Throwable t) {
             Log.w(TAG, "retarget failed: " + t.getMessage());
         }
@@ -1094,6 +1117,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 return;
             }
             final android.widget.TextView tv = (android.widget.TextView) manageButton;
+            sLastCornerButton = tv;
 
             // 按钮自身的文字必须清空：TextView 会先把 setText 的文字画一遍，MirrorDrawable 再
             // 画一遍，同一个位置就出现重影。这里只保留等宽占位，让按钮尺寸够放两段文字，
