@@ -316,6 +316,62 @@ public class MoreBubbleHookModule extends XposedModule {
         Log.i(TAG, "All SystemUI hooks installed");
     }
 
+    // ==================== 嵌入式友好的启动目标 ====================
+    //
+    // 有些应用的主界面是 singleTask（如 Telegram 的 LaunchActivity），塞进 TaskView 后
+    // 手势返回会把唯一任务栈清空 → 宿主直接移除；展开全屏时任务 reparent 也会重建 → 闪退。
+    // 这类应用通常会另外声明一个允许嵌入的 Activity（Telegram 的 org.telegram.ui.BubbleActivity，
+    // allowEmbedded=true + resizeableActivity=true + documentLaunchMode=always）。
+    // 这里在构造气泡 Intent 时优先选它，找不到就保持原样。
+
+    /** 已解析过的包名 → 可用的嵌入式 Activity 全名（无则记为 ""）。 */
+    private static final Map<String, String> sEmbeddableActivity = new ConcurrentHashMap<>();
+
+    /** 把「应用主界面」换成它的嵌入式友好 Activity（若存在）。返回是否替换。 */
+    private static boolean preferEmbeddableActivity(Context ctx, Intent intent) {
+        if (intent == null) return false;
+        String pkg = intent.getPackage();
+        if (pkg == null) return false;
+        if (intent.getComponent() != null
+                && !intent.getComponent().getClassName().equals(pkg)) {
+            // 已经指定了具体界面（例如通知 contentIntent），不覆盖用户意图
+            String cached = sEmbeddableActivity.get(pkg);
+            if (cached == null || !cached.equals(intent.getComponent().getClassName())) return false;
+        }
+        String activity = sEmbeddableActivity.get(pkg);
+        if (activity == null) {
+            activity = findEmbeddableActivity(ctx, pkg);
+            sEmbeddableActivity.put(pkg, activity == null ? "" : activity);
+        }
+        if (activity.isEmpty()) return false;
+        intent.setComponent(new ComponentName(pkg, activity));
+        // singleTask 的任务若被复用会串味，这里明确要一个新任务实例
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        Log.i(TAG, "bubble target: " + pkg + " -> " + activity);
+        return true;
+    }
+
+    /** 包内是否声明了 allowEmbedded + resizeableActivity 的 Activity，返回全类名。 */
+    private static String findEmbeddableActivity(Context ctx, String pkg) {
+        try {
+            android.content.pm.PackageInfo pi = ctx.getPackageManager()
+                    .getPackageInfo(pkg, android.content.pm.PackageManager.GET_ACTIVITIES);
+            if (pi == null || pi.activities == null) return null;
+            for (android.content.pm.ActivityInfo ai : pi.activities) {
+                if (!ai.allowEmbedded || !ai.resizeableActivity) continue;
+                if (ai.exported) continue;      // 只挑内部使用的
+                if (!ai.enabled) continue;
+                Log.i(TAG, "embeddable candidate: " + ai.name);
+                return ai.name;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "embeddable lookup failed for " + pkg + ": " + t.getMessage());
+        }
+        return null;
+    }
+
     /**
      * 手势触发的入口：没有 NotificationEntry，直接按包名/组件建一个应用气泡。
      *
@@ -340,6 +396,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 intent.setComponent(new ComponentName(pkg, cls));
             }
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            preferEmbeddableActivity(ctx, intent);
 
             UserHandle user = (UserHandle) UserHandle.class.getMethod("of", int.class)
                     .invoke(null, userId);
