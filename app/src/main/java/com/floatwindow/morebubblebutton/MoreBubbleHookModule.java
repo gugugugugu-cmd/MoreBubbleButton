@@ -1219,7 +1219,7 @@ public class MoreBubbleHookModule extends XposedModule {
     }
 
     /** 设置页改了位置 / 模式后调用：把正在显示的按钮立刻挪过去。 */
-    static void applyPositionFromSettings(final Context ctx) {
+    public static void applyPositionFromSettings(final Context ctx) {
         // 跟随模式没有独立行，位置就是系统原按钮的位置，不需要处理。
         final ViewGroup row = sSecondRow;
         if (row == null || row.getParent() == null) return;
