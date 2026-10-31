@@ -37,7 +37,7 @@ public class MoreBubbleHookModule extends XposedModule {
     /** 编译标记：日志里能直接看出跑的是哪一版 */
     /** 气泡底部按钮（诊断显示用） */
     private static volatile View sLastCornerButton;
-    private static final String BUILD_TAG = "v1.29-diag-on-button";
+    private static final String BUILD_TAG = "v1.30-ctx-fix";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -365,9 +365,13 @@ public class MoreBubbleHookModule extends XposedModule {
                         try {
                             // 无条件打一条：证明 hook 真的执行了（不管是否命中映射）
                             Object b = getField(self, "mBubble");
+                            // listener 自带 mContext，比 sSystemUiContext 可靠
+                            Object listenerCtx = getField(self, "mContext");
+                            Context useCtx = listenerCtx instanceof Context ? (Context) listenerCtx : sysCtx;
                             Log.i(TAG, name + " hit: bubble=" + (b != null)
-                                    + " pkg=" + (b != null ? getField(b, "mPackageName") : null));
-                            if (b != null) retargetBubble(sysCtx, b, name);
+                                    + " pkg=" + (b != null ? getField(b, "mPackageName") : null)
+                                    + " ctx=" + (useCtx != null));
+                            if (b != null) retargetBubble(useCtx, b, name);
                         } catch (Throwable t) {
                             Log.w(TAG, name + " retarget: " + t.getMessage());
                         }
@@ -423,6 +427,7 @@ public class MoreBubbleHookModule extends XposedModule {
     /** 把 Bubble 的启动目标换成嵌入式 Activity（mIntent + mPendingIntent 都换）。 */
     private static void retargetBubble(Context ctx, Object bubble, String from) {
         if (ctx == null) { Log.i(TAG, "retarget(" + from + "): ctx is null, skip"); showDiag("ctx=null"); return; }
+        if (sSystemUiContext == null) sSystemUiContext = ctx;
         if (bubble == null) { Log.i(TAG, "retarget(" + from + "): bubble is null, skip"); showDiag("bubble=null"); return; }
         Intent currentIntent = (Intent) getField(bubble, "mIntent");
         String pkg = (String) getField(bubble, "mPackageName");
