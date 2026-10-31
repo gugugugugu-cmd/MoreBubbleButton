@@ -35,7 +35,7 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     /** 编译标记：日志里能直接看出跑的是哪一版 */
-    private static final String BUILD_TAG = "v1.23-telegram-final";
+    private static final String BUILD_TAG = "v1.24-telegram-taskintent";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -313,6 +313,37 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "Hooked BubblesManager ctor for gesture bridge");
         } catch (Throwable t) { Log.w(TAG, "Hook BubblesManager ctor: " + t.getMessage()); }
 
+        // 最近任务拖进气泡这条路：BubbleData.getOrCreateBubble(TaskInfo) 直接把
+        // TaskInfo.baseIntent 塞进 Bubble.mIntent，绕过了模块所有 Entry 级 hook。
+        // 这里在它返回之后把 mIntent 换成应用的嵌入式 Activity（若有）。
+        try {
+            Class<?> dataCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleData");
+            java.lang.reflect.Method m = null;
+            for (java.lang.reflect.Method candidate : dataCls.getDeclaredMethods()) {
+                if (!"getOrCreateBubble".equals(candidate.getName()) || candidate.getParameterCount() != 1) continue;
+                if (candidate.getParameterTypes()[0].getName().equals("android.app.TaskInfo")) {
+                    m = candidate;
+                    break;
+                }
+            }
+            if (m != null) {
+                hook(m).intercept(chain -> {
+                    Object bubble = chain.proceed();
+                    try {
+                        patchBubbleIntent(chain.getThisObject(), bubble);
+                    } catch (Throwable t) {
+                        Log.w(TAG, "patch bubble intent: " + t.getMessage());
+                    }
+                    return bubble;
+                });
+                Log.i(TAG, "Hooked BubbleData.getOrCreateBubble(TaskInfo) build=" + BUILD_TAG);
+            } else {
+                Log.w(TAG, "BubbleData.getOrCreateBubble(TaskInfo) not found");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Hook getOrCreateBubble: " + t.getMessage());
+        }
+
         installLandscapeLaunchBounds(cl);
 
         Log.i(TAG, "All SystemUI hooks installed, build=" + BUILD_TAG);
@@ -328,6 +359,40 @@ public class MoreBubbleHookModule extends XposedModule {
 
     /** 已解析过的包名 → 可用的嵌入式 Activity 全名（无则记为 ""）。 */
     private static final Map<String, String> sEmbeddableActivity = new ConcurrentHashMap<>();
+
+
+    /**
+     * 把 Bubble.mIntent 换成「应用的嵌入式 Activity」（如果配置了）。
+     * 只有最近任务这条路需要：BubbleData 直接复制 TaskInfo.baseIntent，不给外部改的机会。
+     */
+    private static void patchBubbleIntent(Object bubbleData, Object bubble) {
+        if (bubble == null) return;
+        Intent intent = (Intent) getField(bubble, "mIntent");
+        if (intent == null) return;
+        String pkg = intent.getPackage();
+        if (pkg == null) {
+            Object pkgName = getField(bubble, "mPackageName");
+            if (pkgName instanceof String) pkg = (String) pkgName;
+        }
+        if (pkg == null) return;
+        String forced = EMBEDDABLE_OVERRIDES.get(pkg);
+        Log.i(TAG, "bubble data intent: pkg=" + pkg + " component=" + intent.getComponent()
+                + " forced=" + forced);
+        if (forced == null) return;
+        Intent replacement = new Intent(intent);
+        replacement.setComponent(new ComponentName(pkg, forced));
+        replacement.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        try {
+            java.lang.reflect.Field f = bubble.getClass().getDeclaredField("mIntent");
+            f.setAccessible(true);
+            f.set(bubble, replacement);
+            Log.i(TAG, "bubble intent replaced: " + pkg + " -> " + forced);
+        } catch (Throwable t) {
+            Log.w(TAG, "replace bubble intent failed: " + t.getMessage());
+        }
+    }
 
     /** 把「应用主界面」换成它的嵌入式友好 Activity（若存在）。返回是否替换。 */
     /**
