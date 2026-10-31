@@ -42,6 +42,13 @@ public final class BubbleRequestReceiver extends BroadcastReceiver {
 
     public static final String EXTRA_PACKAGE = "pkg";
 
+    /** 允许免权限触发的调用方包名（GestureEVO 正式版 / debug 版）。 */
+    private static final java.util.Set<String> ALLOWED_SENDERS = new java.util.HashSet<>(
+            java.util.Arrays.asList(
+                    "io.github.lumiagg.gestureevo",
+                    "io.github.lumiagg.gestureevo.debug",
+                    "com.floatwindow.morebubblebutton"));
+
     /** shell UID 与 root UID：允许它们免权限调用，方便用 am/adb 直接触发调试。 */
     private static final int UID_SHELL = 2000;
     private static final int UID_ROOT = 0;
@@ -101,32 +108,31 @@ public final class BubbleRequestReceiver extends BroadcastReceiver {
     }
 
     /**
-     * 调用方校验：持有 {@link #PERMISSION}，或来自 shell / root。
+     * 调用方校验：持有 {@link #PERMISSION}，或来自 shell / root，或白名单包名。
      *
-     * <p>用 Binder 上的 callingUid 而不是 intent 里的字段——后者可被伪造。
-     * 动态接收器在 onReceive 执行时 Binder 调用身份仍在，可以拿到。
+     * <p>注意：动态注册的广播接收器在 onReceive 里 {@code Binder.getCallingUid()} 拿到的是
+     * 广播投递线程的身份（通常是自己），**不是**发送方 —— 广播是异步投递的，Binder 调用身份
+     * 早已结束。因此用 {@link BroadcastReceiver#getSentFromUid()} /
+     * {@link BroadcastReceiver#getSentFromPackage()}，这两个 API 在 onReceive 里可用，
+     * 且由系统填写、不可被发送方伪造。
      */
-    private static boolean isTrusted() {
+    private boolean isTrusted() {
         try {
-            int uid = android.os.Binder.getCallingUid();
+            int uid = getSentFromUid();
             if (uid == UID_ROOT || uid == UID_SHELL) return true;
-            try {
-                Class<?> at = Class.forName("android.app.ActivityThread");
-                Method current = at.getMethod("currentActivityThread");
-                Object thread = current.invoke(null);
-                Method getPm = at.getMethod("getPackageManager");
-                Object pm = getPm.invoke(thread);
-                Method check = PackageManager.class.getMethod(
-                        "getPackagesForUid", int.class);
-                String[] pkgs = (String[]) check.invoke(pm, uid);
-                if (pkgs == null) return false;
-                Method checkPerm = PackageManager.class.getMethod(
-                        "checkPermission", String.class, String.class);
-                for (String p : pkgs) {
-                    int r = (int) checkPerm.invoke(pm, PERMISSION, p);
-                    if (r == PackageManager.PERMISSION_GRANTED) return true;
+            String sender = getSentFromPackage();
+            if (sender != null && ALLOWED_SENDERS.contains(sender)) return true;
+            if (uid < 0) return false;
+            PackageManager pm = systemUiContext != null
+                    ? systemUiContext.getPackageManager() : null;
+            if (pm == null) return false;
+            String[] pkgs = pm.getPackagesForUid(uid);
+            if (pkgs == null) return false;
+            for (String p : pkgs) {
+                if (pm.checkPermission(PERMISSION, p) == PackageManager.PERMISSION_GRANTED) {
+                    return true;
                 }
-            } catch (Throwable ignored) { }
+            }
             return false;
         } catch (Throwable t) {
             return false;
