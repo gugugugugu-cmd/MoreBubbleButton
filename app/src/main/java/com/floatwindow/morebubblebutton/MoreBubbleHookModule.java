@@ -272,10 +272,10 @@ public class MoreBubbleHookModule extends XposedModule {
                         // （上滑 / 展开动画）会同时带上右侧按钮。
                         applyCornerButtonActions(chain.getThisObject(), (View) btn);
                     } else {
-                        Log.w(TAG, "corner action: mManageButton not a View; skipped");
+                        Log.i(TAG, "corner action: mManageButton not a View; skipped");
                     }
                 } catch (Throwable t) {
-                    Log.w(TAG, "corner action install: " + t.getMessage(), t);
+                    Log.i(TAG, "corner action install: " + t.getMessage(), t);
                 }
                 return result;
             });
@@ -822,7 +822,7 @@ public class MoreBubbleHookModule extends XposedModule {
                     ? (ViewGroup) manageButton.getParent()
                     : (expandedView instanceof ViewGroup ? (ViewGroup) expandedView : null);
             if (parent == null) {
-                Log.w(TAG, "corner action: no parent for manage button; row not added");
+                Log.i(TAG, "corner action: no parent for manage button; row not added");
                 return;
             }
             int index = parent.indexOfChild(manageButton);
@@ -838,7 +838,7 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             View clone = cloneManageButton(manageButton);
             if (clone == null) {
-                Log.w(TAG, "corner action: clone button failed; only close button installed");
+                Log.i(TAG, "corner action: clone button failed; only close button installed");
                 return;
             }
             if (clone instanceof android.widget.TextView) {
@@ -856,6 +856,9 @@ public class MoreBubbleHookModule extends XposedModule {
             SyncCornerLayout row = new SyncCornerLayout(parent.getContext());
             row.setTag(CORNER_ROW_TAG, Boolean.TRUE);
             ViewGroup.LayoutParams lp = cloneParentParams(manageButton.getLayoutParams());
+            // 容器接替官方按钮那一行，并带上 bubble_expanded_view 这个 id：官方有代码按它
+            // findViewById 找底部容器，id 丢了容器就会变成一棵“没人管”的子树。
+            row.setId(expandedViewId(expandedView, manageButton));
             if (index >= 0 && index <= parent.getChildCount()) {
                 parent.addView(row, index, lp);
             } else {
@@ -864,8 +867,28 @@ public class MoreBubbleHookModule extends XposedModule {
             row.bind(manageButton, template, clone);
             Log.i(TAG, "corner action: close + fullscreen buttons share row "
                     + parent.getClass().getSimpleName());
+            // 调试用：几帧后把结果打到日志里（父容器类型 / 容器 id / 两个子 View 的可见性与尺寸），
+            // 下次“按钮丢失”时直接看这三行，不用再猜是容器被隐藏还是布局塌了。
+            row.post(new Runnable() {
+                @Override public void run() {
+                    try {
+                        Log.i(TAG, "corner row: parent=" + parent.getClass().getSimpleName()
+                                + "#" + Integer.toHexString(System.identityHashCode(parent))
+                                + " rowId=" + (row.getId() == View.NO_ID ? "none" : "0x" + Integer.toHexString(row.getId()))
+                                + " row=" + row.getWidth() + "x" + row.getHeight()
+                                + " vis=" + row.getVisibility());
+                        if (template != null) Log.i(TAG, "corner button template vis=" + template.getVisibility()
+                                + " alpha=" + template.getAlpha() + " size=" + template.getMeasuredWidth()
+                                + "x" + template.getMeasuredHeight());
+                        if (clone != null) Log.i(TAG, "corner button fullscreen vis=" + clone.getVisibility()
+                                + " size=" + clone.getWidth() + "x" + clone.getHeight());
+                        if (manageButton != null) Log.i(TAG, "corner button close vis=" + manageButton.getVisibility()
+                                + " size=" + manageButton.getWidth() + "x" + manageButton.getHeight());
+                    } catch (Throwable t) { Log.i(TAG, "corner row dump: " + t.getMessage()); }
+                }
+            });
         } catch (Throwable t) {
-            Log.w(TAG, "corner action install failed: " + t.getMessage(), t);
+            Log.i(TAG, "corner action install failed: " + t.getMessage(), t);
         }
     }
 
@@ -891,7 +914,7 @@ public class MoreBubbleHookModule extends XposedModule {
                 return cv;
             }
         } catch (Throwable alphaErr) {
-            Log.w(TAG, "corner action: AlphaOptimizedButton clone unavailable: "
+            Log.i(TAG, "corner action: AlphaOptimizedButton clone unavailable: "
                     + alphaErr.getMessage() + "; falling back to generic copy");
         }
         try {
@@ -909,16 +932,34 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "corner action: cloned generic Button OK");
             return b;
         } catch (Throwable genericErr) {
-            Log.w(TAG, "corner action: generic clone failed: " + genericErr.getMessage(), genericErr);
+            Log.i(TAG, "corner action: generic clone failed: " + genericErr.getMessage(), genericErr);
             return null;
         }
     }
 
+    /** 用官方资源里的 R.id.bubble_expanded_view 给容器，找不到时退回 -1（不设 id）。 */
+    private static int expandedViewId(Object expandedView, View fallback) {
+        try {
+            if (fallback != null && fallback.getId() != View.NO_ID) return fallback.getId();
+            Class<?> rId = expandedView.getClass().getClassLoader()
+                    .loadClass("com.android.internal.R$id");
+            java.lang.reflect.Field f = rId.getField("bubble_expanded_view");
+            f.setAccessible(true);
+            return f.getInt(null);
+        } catch (Throwable t) {
+            Log.i(TAG, "corner action: bubble_expanded_view id unavailable: " + t.getMessage());
+            return View.NO_ID;
+        }
+    }
+
     /**
-     * 容器接替官方按钮在父容器里的位置，但不要原来的 margin：容器自身不参与测量，
-     * 单独一行的负 margin / topMargin 只会把两颗按钮拖歪。
+     * 容器接替官方按钮在父容器里的位置：宽度沿用官方按钮那一行（wrap_content / match_parent 都一样），
+     * 高度用 WRAP_CONTENT —— 容器的高度就是两颗按钮里最高的那颗，和原来「管理按钮一行」的高度一致，
+     * 不会把窗口撑高，也不会被父容器给到 0 高度。
+     * 原来按钮上的 margin 不要：那是给固定高度的按钮贴边用的，容器自己排位置。
      */
     private static ViewGroup.LayoutParams cloneParentParams(ViewGroup.LayoutParams src) {
+        int width = src != null ? src.width : ViewGroup.LayoutParams.WRAP_CONTENT;
         ViewGroup.LayoutParams lp;
         if (src instanceof FrameLayout.LayoutParams) {
             FrameLayout.LayoutParams f = new FrameLayout.LayoutParams((FrameLayout.LayoutParams) src);
@@ -929,12 +970,10 @@ public class MoreBubbleHookModule extends XposedModule {
             l.setMargins(0, 0, 0, 0);
             lp = l;
         } else {
-            lp = new ViewGroup.LayoutParams(
-                    src != null ? src.width : ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp = new ViewGroup.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT);
         }
-        // 高度交给父容器决定：容器不参与测量，onLayout 里只把两颗按钮排到容器当前范围。
-        lp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+        lp.width = width;
+        lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
         return lp;
     }
 
@@ -999,7 +1038,7 @@ public class MoreBubbleHookModule extends XposedModule {
             dismiss.invoke(data, args);
             Log.i(TAG, "corner action: dismissed bubble key=" + key + " reason=USER_GESTURE");
         } catch (Throwable t) {
-            Log.w(TAG, "corner action: dismiss bubble failed: " + t.getMessage(), t);
+            Log.i(TAG, "corner action: dismiss bubble failed: " + t.getMessage(), t);
         }
     }
 
@@ -1054,7 +1093,7 @@ public class MoreBubbleHookModule extends XposedModule {
             }
             throw new IllegalStateException("no collapse entry available");
         } catch (Throwable t) {
-            Log.w(TAG, "corner action: collapse stack failed: " + t.getMessage(), t);
+            Log.i(TAG, "corner action: collapse stack failed: " + t.getMessage(), t);
         }
     }
 
@@ -1075,7 +1114,7 @@ public class MoreBubbleHookModule extends XposedModule {
             move.invoke(controller, taskController);
             Log.i(TAG, "corner action: official fullscreen handoff submitted");
         } catch (Throwable t) {
-            Log.w(TAG, "corner action: official fullscreen handoff failed: " + t.getMessage(), t);
+            Log.i(TAG, "corner action: official fullscreen handoff failed: " + t.getMessage(), t);
         }
     }
 
@@ -1128,11 +1167,11 @@ public class MoreBubbleHookModule extends XposedModule {
                     Log.i(TAG, "corner action: launcher start submitted package="
                             + packageName + " user=" + userIdOf(launchUser));
                 } catch (Throwable t) {
-                    Log.w(TAG, "corner action: delayed launcher start failed: " + t.getMessage(), t);
+                    Log.i(TAG, "corner action: delayed launcher start failed: " + t.getMessage(), t);
                 }
             }, 280L);
         } catch (Throwable t) {
-            Log.w(TAG, "corner action: launcher start failed: " + t.getMessage(), t);
+            Log.i(TAG, "corner action: launcher start failed: " + t.getMessage(), t);
         }
     }
 

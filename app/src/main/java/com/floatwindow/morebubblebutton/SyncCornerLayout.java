@@ -5,23 +5,26 @@ import android.view.View;
 import android.view.ViewGroup;
 
 /**
- * 气泡小窗底部按钮容器：「关闭小窗」（左）与「展开小窗」（右）放在同一个普通
- * {@link ViewGroup} 里，{@link #onLayout} 每次把两颗按钮排到相对本容器的最新位置。
+ * 气泡小窗底部按钮容器：「关闭小窗」（左）与「展开小窗」（右）放进同一个普通
+ * {@link ViewGroup}，{@link #onLayout} 每次把两颗按钮排到相对本容器的最新位置。
  *
- * <p>为什么不直接 addView 到 BubbleExpandedView：那是垂直 LinearLayout，多一个 child 就多一行、
- * 把窗口撑高，自造按钮只能用负 topMargin 叠上去 —— 布局尺寸一没定下来就会错位，跟左侧按钮脱节。
+ * <p>为什么要容器：直接 addView 到 BubbleExpandedView（垂直 LinearLayout）时，多一个 child 就多一行，
+ * 自造按钮只能靠负 topMargin 硬叠、再 post 里补 translationY —— 布局一没定下来就错位，
+ * 而且官方动画只推「管理」按钮那一行，右侧按钮会停在原地。两颗按钮共用一个父 View，
+ * 官方的位移 / 显隐 / 展开动画都会同时带上它们。
  *
- * <p>为什么不用自定义测量/布局逻辑：容器要能接住官方 `measure` + `layout(l,t,r,b)` 那一套
- * （不依赖 onMeasure 是否被调），普通 ViewGroup 才能保证官方把它当普通 child 摆放、不会有意外。
- * 容器自己不占位置：onLayout 结束时把自身下沉到两颗按钮底部，于是布局阶段它垫在按钮下方，
- * 下一帧作为 l/t/r/b 传给子 View 时又是新位置 —— 按钮位置永远与容器一致。
+ * <p>为什么不用自定义测量、布局：容器会被父容器按官方的 measure 规则测量，并且可能被随时
+ * addView / removeView（官方 updateOverflow、setManageButtonVisibility 都会动它的子 View）。
+ * 这里只重写 onLayout，测量完全交给 ViewGroup 默认实现，避免在布局流程里出任何幺蛾子。
  *
- * <p>官方下一轮 addView / setVisibility / 位移动画都落在容器上；容器把可见性代理给真正的按钮，
- * 所以官方推「管理」按钮（=推容器）时，两颗按钮在同一个平移里一起走。
+ * <p>为什么必须 setId(bubble_expanded_view)：官方不少代码按这个 id 找底部容器
+ * （{@code findViewById(R.id.bubble_expanded_view)}），历史上真的有过容器内部堆叠的版本。
+ * 容器现在接替了「管理按钮那一行」在 BubbleExpandedView 里的位置，把同一个 id 带过来，
+ * 父级的 findViewById 依然能找到容器 —— 找不到时官方会把右侧按钮当成自己要显示/隐藏的对象。
  */
 class SyncCornerLayout extends ViewGroup {
     View primary;   // 官方 mManageButton（关闭小窗）
-    View secondary; // 隐藏的尺寸模板（只用来量文字尺寸，透明且不占位）
+    View secondary; // 隐藏的尺寸模板（只用来量文字宽度）
     View tertiary;  // 自造按钮（展开小窗）
 
     SyncCornerLayout(Context context) {
