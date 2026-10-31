@@ -334,9 +334,11 @@ public class MoreBubbleHookModule extends XposedModule {
         if (pkg == null) return false;
         if (intent.getComponent() != null
                 && !intent.getComponent().getClassName().equals(pkg)) {
-            // 已经指定了具体界面（例如通知 contentIntent），不覆盖用户意图
+            // 已经指定了具体界面（通知 contentIntent / 最近任务顶栈）时默认不覆盖，
+            // 但宿主界面若是 singleTask，塞进 TaskView 会立即自毁，此时仍要换成嵌入式 Activity。
             String cached = sEmbeddableActivity.get(pkg);
-            if (cached == null || !cached.equals(intent.getComponent().getClassName())) return false;
+            if (cached != null && cached.isEmpty()) return false;
+            if (cached == null && findEmbeddableActivity(ctx, pkg) == null) return false;
         }
         String activity = sEmbeddableActivity.get(pkg);
         if (activity == null) {
@@ -476,6 +478,10 @@ public class MoreBubbleHookModule extends XposedModule {
                 targetIntent.setPackage(pkg);
             }
             targetIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            Context sysCtx = (Context) getFieldSystemUi(controller, "mContext");
+            if (sysCtx != null) preferEmbeddableActivity(sysCtx, targetIntent);
+            Log.i(TAG, reason + ": target component = " + targetIntent.getComponent()
+                    + " pkg=" + targetIntent.getPackage());
             final Intent finalIntent = targetIntent;
             final UserHandle finalUser = user;
             Runnable work = () -> {
@@ -1751,6 +1757,10 @@ public class MoreBubbleHookModule extends XposedModule {
             // Always ensure package is set (BubbleData.getOrCreateBubble needs intent.getPackage())
             if (bIntent.getPackage() == null && bIntent.getComponent() != null)
                 bIntent.setPackage(bIntent.getComponent().getPackageName());
+
+            // singleTask 应用（如 Telegram）在 TaskView 里会自己 finish，优先换成它自带的嵌入式 Activity
+            preferEmbeddableActivity(ctx, bIntent);
+            Log.i(TAG, "recents bubble target: " + bIntent.getComponent() + " pkg=" + bIntent.getPackage());
 
             // Set the exact top component for precise bubble targeting (for deep-linked / secondary activities)
             try {
