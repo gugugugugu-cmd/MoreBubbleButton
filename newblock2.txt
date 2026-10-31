@@ -1,0 +1,187 @@
+    // ===== 气泡小窗底部按钮：把官方「管理」按钮改造成「关闭 | 展开」双区域按钮 =====
+
+    /** 标记我们装到官方按钮上的监听，避免每轮重复叠加。 */
+    private static final int CORNER_TOUCH_TAG = 0x4d4f5245; // "MORE"
+
+    /**
+     * 为什么是一颗按钮的两个区域，而不是两颗按钮：
+     *
+     * <p>官方 {@code mExpandedViewContainer} 是 {@code setClipChildren(false)} 之外还带
+     * {@code setClipToOutline(true)} 的 FrameLayout，展开窗上滑 / 收起时容器本身在被裁，
+     * 「管理」按钮在容器内会被裁掉一半、再整条消失。任何挂在容器外面的自造按钮都跟不上这条
+     * 裁剪边界 —— 这就是之前右侧按钮“原地不动”的根因。
+     *
+     * <p>所以只保留官方这一颗 View，用 {@code MirrorDrawable} 把它的背景画成左右两半
+     * （左「关闭小窗」、右「展开小窗」，中间一条分隔线），触摸按 {@code getX()} 分派。
+     * 同一颗 View 必然同一行、同一动画、同一条裁剪边界，不可能再脱节。
+     *
+     * <p>点击走 {@code OnTouchListener} 而不是 {@code OnClickListener}：TouchListener 先于
+     * 官方自己的 click 处理执行，返回 true 直接吃掉 DOWN/UP，不会被官方「管理菜单」抢走。
+     */
+    private static void applyCornerButtonActions(Object expandedView, View manageButton) {
+        try {
+            dumpCornerTree(expandedView, manageButton, "before");
+
+            // overflow 抽屉没有可关闭/展开的任务。
+            Object isOverflow = getField(expandedView, "mIsOverflow");
+            Object bubble = getField(expandedView, "mBubble");
+            Object bubbleKey = invoke(expandedView, "getBubbleKey");
+            if (Boolean.TRUE.equals(isOverflow)
+                    || "Overflow".equals(bubbleKey)
+                    || bubble == null) {
+                Log.i(TAG, "corner action: skip overflow drawer");
+                return;
+            }
+
+            if (!(manageButton instanceof android.widget.TextView)) {
+                Log.i(TAG, "corner action: manage button is not a TextView; skipped");
+                return;
+            }
+            final android.widget.TextView tv = (android.widget.TextView) manageButton;
+
+            // 左侧文案 + 右侧占位，让按钮自己长到能放下两段文字。
+            // 用不间断空格占位：右侧文字不真画出来，由 MirrorDrawable 画在右半区。
+            tv.setText("关闭小窗\u3000\u3000展开小窗");
+            tv.setOnClickListener(null);
+            tv.setClickable(true);
+
+            // 背景换成「原背景镜像成左右两半」的包装；原始背景在每轮更新时重新取，
+            // 主题切换后也能跟上。
+            Object painted = tv.getTag(CORNER_TOUCH_TAG);
+            MirrorDrawable mirror = painted instanceof MirrorDrawable ? (MirrorDrawable) painted : null;
+            if (mirror == null || mirror.src != snapshotBackground(tv)) {
+                mirror = new MirrorDrawable(tv.getBackground(), tv);
+                tv.setTag(CORNER_TOUCH_TAG, mirror);
+                tv.setBackground(mirror);
+            }
+            mirror.bind(tv);
+
+            tv.setOnTouchListener((v, event) -> {
+                switch (event.getActionMasked()) {
+                    case android.view.MotionEvent.ACTION_DOWN:
+                        v.animate().cancel();
+                        v.setPressed(true);
+                        return true;
+                    case android.view.MotionEvent.ACTION_CANCEL:
+                        v.setPressed(false);
+                        return true;
+                    case android.view.MotionEvent.ACTION_UP:
+                        v.setPressed(false);
+                        if (event.getX() < v.getWidth() / 2f) {
+                            Log.i(TAG, "corner action: left half -> dismiss");
+                            dismissBubbleAsUserGesture(expandedView);
+                        } else {
+                            Log.i(TAG, "corner action: right half -> fullscreen");
+                            expandBubbleFullscreen(expandedView);
+                        }
+                        return true;
+                    default:
+                        return true;
+                }
+            });
+            Log.i(TAG, "corner action: single button split into close|expand");
+        } catch (Throwable t) {
+            Log.i(TAG, "corner action install failed: " + t.getMessage(), t);
+        }
+    }
+
+    /** 取按钮当前背景（去掉我们自己包的那一层），用于判断是否需要重建包装。 */
+    private static android.graphics.drawable.Drawable snapshotBackground(View v) {
+        android.graphics.drawable.Drawable bg = v.getBackground();
+        if (bg instanceof MirrorDrawable) return ((MirrorDrawable) bg).src;
+        return bg;
+    }
+
+    /**
+     * 把官方按钮背景镜像成左右两半，各画一段文案：
+     * 左半区原样画「关闭小窗」，右半区画「展开小窗」，中间一条竖分隔线；
+     * 左右两半各自用原背景的对应一半，视觉上仍是同一颗胶囊。
+     */
+    static class MirrorDrawable extends android.graphics.drawable.Drawable {
+        final android.graphics.drawable.Drawable src;
+        android.widget.TextView host;
+        final android.graphics.Paint textPaint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        final android.graphics.Paint dividerPaint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+        final android.graphics.Rect bounds = new android.graphics.Rect();
+
+        MirrorDrawable(android.graphics.drawable.Drawable src, android.widget.TextView host) {
+            this.src = src;
+            this.host = host;
+            dividerPaint.setStyle(android.graphics.Paint.Style.STROKE);
+        }
+
+        void bind(android.widget.TextView host) {
+            this.host = host;
+            textPaint.setTextSize(host.getTextSize());
+            textPaint.setTextAlign(android.graphics.Paint.Align.CENTER);
+            textPaint.setTypeface(host.getTypeface());
+            try {
+                textPaint.setColor(host.getCurrentTextColor());
+            } catch (Throwable ignored) {
+                textPaint.setColor(0xff1b1b1b);
+            }
+            dividerPaint.setColor(0x33808080);
+            dividerPaint.setStrokeWidth(Math.max(1f, host.getResources().getDisplayMetrics().density));
+        }
+
+        @Override public void draw(android.graphics.Canvas canvas) {
+            android.graphics.Rect b = getBounds();
+            if (b.isEmpty()) return;
+            int mid = b.centerX();
+            // 左半区
+            int save = canvas.save();
+            canvas.clipRect(b.left, b.top, mid, b.bottom);
+            if (src != null) {
+                src.setBounds(b);
+                src.draw(canvas);
+            }
+            drawLabel(canvas, "关闭小窗", b.left, mid, b.top, b.bottom);
+            canvas.restoreToCount(save);
+            // 右半区
+            save = canvas.save();
+            canvas.clipRect(mid, b.top, b.right, b.bottom);
+            if (src != null) {
+                src.setBounds(b);
+                src.draw(canvas);
+            }
+            drawLabel(canvas, "展开小窗", mid, b.right, b.top, b.bottom);
+            canvas.restoreToCount(save);
+            // 分隔线
+            canvas.drawLine(mid, b.top + b.height() * 0.28f, mid, b.bottom - b.height() * 0.28f, dividerPaint);
+        }
+
+        private void drawLabel(android.graphics.Canvas canvas, String text, int left, int right, int top, int bottom) {
+            android.graphics.Paint.FontMetrics fm = textPaint.getFontMetrics();
+            float baseline = (top + bottom) / 2f - (fm.ascent + fm.descent) / 2f;
+            canvas.drawText(text, (left + right) / 2f, baseline, textPaint);
+        }
+
+        @Override public void setAlpha(int alpha) {
+            if (src != null) src.setAlpha(alpha);
+        }
+
+        @Override public void setColorFilter(android.graphics.ColorFilter cf) {
+            if (src != null) src.setColorFilter(cf);
+        }
+
+        @Override public int getOpacity() {
+            return android.graphics.PixelFormat.TRANSLUCENT;
+        }
+
+        @Override protected void onBoundsChange(android.graphics.Rect r) {
+            super.onBoundsChange(r);
+            bounds.set(r);
+        }
+
+        @Override public boolean isStateful() { return true; }
+
+        @Override protected boolean onStateChange(int[] state) {
+            if (src != null) src.setState(state);
+            return true;
+        }
+
+        @Override public int getIntrinsicWidth() { return src != null ? src.getIntrinsicWidth() : -1; }
+
+        @Override public int getIntrinsicHeight() { return src != null ? src.getIntrinsicHeight() : -1; }
+    }
+
