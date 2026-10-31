@@ -35,7 +35,7 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     /** 编译标记：日志里能直接看出跑的是哪一版 */
-    private static final String BUILD_TAG = "v1.24-telegram-taskintent";
+    private static final String BUILD_TAG = "v1.25-telegram-launchpoint";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -344,6 +344,49 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.w(TAG, "Hook getOrCreateBubble: " + t.getMessage());
         }
 
+        // 最终启动点：BubbleTaskViewListener 通过 TaskViewController.startActivity(...)
+        // 真正把 PendingIntent 交给 TaskView。参数顺序：
+        //   (TaskViewTaskController, PendingIntent, Intent, ActivityOptions, Rect)
+        // 在这里把 PendingIntent 换成应用的嵌入式 Activity，前面所有 hook 漏掉的都在这一步兜住。
+        try {
+            Class<?> tvc = cl.loadClass("com.android.wm.shell.taskview.TaskViewController");
+            java.lang.reflect.Method target = null;
+            for (java.lang.reflect.Method m : tvc.getDeclaredMethods()) {
+                if (!"startActivity".equals(m.getName()) || m.getParameterCount() != 5) continue;
+                Class<?>[] p = m.getParameterTypes();
+                if (p[1] == android.app.PendingIntent.class && p[2] == Intent.class) {
+                    target = m;
+                    break;
+                }
+            }
+            if (target != null) {
+                hook(target).intercept(chain -> {
+                    try {
+                        Object pending = chain.getArg(1);
+                        Object intent = chain.getArg(2);
+                        Context ctx = sSystemUiContext;
+                        android.app.PendingIntent swapped =
+                                swapForEmbeddable(ctx, (android.app.PendingIntent) pending, (Intent) intent);
+                        if (swapped != null) {
+                            try {
+                                chain.setArg(1, swapped);
+                            } catch (Throwable t) {
+                                Log.w(TAG, "setArg unavailable: " + t.getMessage());
+                            }
+                        }
+                    } catch (Throwable t) {
+                        Log.w(TAG, "final start swap: " + t.getMessage());
+                    }
+                    return chain.proceed();
+                });
+                Log.i(TAG, "Hooked TaskViewController.startActivity (final launch point) " + BUILD_TAG);
+            } else {
+                Log.w(TAG, "TaskViewController.startActivity(5 args) not found");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Hook TaskViewController.startActivity: " + t.getMessage());
+        }
+
         installLandscapeLaunchBounds(cl);
 
         Log.i(TAG, "All SystemUI hooks installed, build=" + BUILD_TAG);
@@ -360,6 +403,41 @@ public class MoreBubbleHookModule extends XposedModule {
     /** 已解析过的包名 → 可用的嵌入式 Activity 全名（无则记为 ""）。 */
     private static final Map<String, String> sEmbeddableActivity = new ConcurrentHashMap<>();
 
+
+
+    /**
+     * 把「原始待启动的 PendingIntent」换成应用的嵌入式 Activity。
+     * 拿不到包名或没有配置映射时返回 null（表示不替换）。
+     */
+    private static android.app.PendingIntent swapForEmbeddable(Context ctx,
+            android.app.PendingIntent original, Intent fallbackIntent) {
+        if (ctx == null) return null;
+        String pkg = null;
+        Intent base = null;
+        try {
+            if (original != null) {
+                base = (Intent) original.getClass().getMethod("getIntent").invoke(original);
+                if (base != null) pkg = base.getPackage();
+            }
+        } catch (Throwable ignored) {}
+        if (pkg == null && fallbackIntent != null) {
+            pkg = fallbackIntent.getPackage();
+        }
+        if (pkg == null) return null;
+        String forced = EMBEDDABLE_OVERRIDES.get(pkg);
+        Log.i(TAG, "final launch: pkg=" + pkg + " forced=" + forced
+                + " base=" + (base != null ? base.getComponent() : null));
+        if (forced == null) return null;
+        Intent target = new Intent(base != null ? base : new Intent());
+        target.setComponent(new ComponentName(pkg, forced));
+        target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
+                | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+        Log.i(TAG, "final launch swapped -> " + forced);
+        // flags 与 BubbleTaskViewListener 里的一致：FLAG_MUTABLE 必须保留，否则 PendingIntent 创建失败
+        return android.app.PendingIntent.getActivity(ctx, 0, target,
+                android.app.PendingIntent.FLAG_MUTABLE | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
+    }
 
     /**
      * 把 Bubble.mIntent 换成「应用的嵌入式 Activity」（如果配置了）。
