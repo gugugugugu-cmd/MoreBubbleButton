@@ -24,6 +24,10 @@ public class SettingsProvider extends ContentProvider {
         add(cursor, ModuleSettings.KEY_MENU_ENABLED, prefs.getBoolean(ModuleSettings.KEY_MENU_ENABLED, true));
         add(cursor, ModuleSettings.KEY_ACTION_BAR_ENABLED, prefs.getBoolean(ModuleSettings.KEY_ACTION_BAR_ENABLED, true));
         add(cursor, ModuleSettings.KEY_SYSTEMUI_BUBBLE_ENABLED, prefs.getBoolean(ModuleSettings.KEY_SYSTEMUI_BUBBLE_ENABLED, true));
+        add(cursor, ModuleSettings.KEY_BUBBLE_BROADCAST_ENABLED, prefs.getBoolean(ModuleSettings.KEY_BUBBLE_BROADCAST_ENABLED, true));
+        add(cursor, ModuleSettings.KEY_POSITION_MODE, prefs.getInt(ModuleSettings.KEY_POSITION_MODE, 0));
+        add(cursor, ModuleSettings.KEY_POS_X, prefs.getInt(ModuleSettings.KEY_POS_X, 50));
+        add(cursor, ModuleSettings.KEY_POS_Y, prefs.getInt(ModuleSettings.KEY_POS_Y, 50));
         return cursor;
     }
 

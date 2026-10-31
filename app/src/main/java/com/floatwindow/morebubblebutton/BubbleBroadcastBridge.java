@@ -36,6 +36,7 @@ public final class BubbleBroadcastBridge {
     };
 
     private static volatile boolean sRegistered;
+    private static Receiver sReceiver;
     private static volatile Object sManager;
 
     private BubbleBroadcastBridge() {}
@@ -50,12 +51,24 @@ public final class BubbleBroadcastBridge {
     static void attach(Context ctx, Object bubblesManager) {
         if (bubblesManager == null) return;
         sManager = bubblesManager;
+        if (ctx == null) return;
+        // 设置里关掉了气泡广播 → 不注册接收器，外部请求直接不会被投递过来。
+        if (!ModuleSettings.isBubbleBroadcastEnabled(ctx)) {
+            if (sRegistered) {
+                try { ctx.unregisterReceiver(sReceiver); } catch (Throwable ignored) {}
+                sReceiver = null;
+                sRegistered = false;
+                Log.i(TAG, "gesture bridge unregistered (disabled in settings)");
+            }
+            return;
+        }
         if (sRegistered || ctx == null) return;
         try {
             IntentFilter filter = new IntentFilter(ACTION_SHOW_APP_BUBBLE);
             // SystemUI 的 targetSdk 很高，动态注册必须显式声明导出，
             // 否则来自外部应用的广播会被系统直接丢弃。
-            ctx.registerReceiver(new Receiver(), filter, Context.RECEIVER_EXPORTED);
+            sReceiver = new Receiver();
+            ctx.registerReceiver(sReceiver, filter, Context.RECEIVER_EXPORTED);
             sRegistered = true;
             Log.i(TAG, "gesture bridge receiver registered");
         } catch (Throwable t) {
@@ -77,7 +90,8 @@ public final class BubbleBroadcastBridge {
                 Log.w(TAG, "rejected bubble request from " + sender);
                 return;
             }
-            if (!ModuleSettings.isSystemUiBubbleEnabled(context)) {
+            if (!ModuleSettings.isSystemUiBubbleEnabled(context)
+                    || !ModuleSettings.isBubbleBroadcastEnabled(context)) {
                 Log.w(TAG, "bubble trigger disabled in settings");
                 return;
             }

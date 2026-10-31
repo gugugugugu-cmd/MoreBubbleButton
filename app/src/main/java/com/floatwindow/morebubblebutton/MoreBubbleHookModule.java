@@ -36,6 +36,8 @@ public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     private Object recentsViewInstance;
     private View bubbleButton;
+    /** 第二行模式的容器（null = 跟随原按钮） */
+    private static ViewGroup sSecondRow;
     private ClassLoader mLauncherClassLoader;
 
     @Override
@@ -1209,56 +1211,140 @@ public class MoreBubbleHookModule extends XposedModule {
         ViewGroup actionsParent = (ViewGroup) actionsView;
 
         Button btn = createBubbleButton(ctx, res, pkg);
-        addToActionButtons(actionsParent, btn, res, pkg);
+        if (ModuleSettings.getPositionMode(ctx) == 1) {
+            ensureSecondRow(actionsParent, btn, res, pkg);
+        } else {
+            addToActionButtons(actionsParent, btn, res, pkg);
+        }
+    }
+
+    /** 设置页改了位置 / 模式后调用：把正在显示的按钮立刻挪过去。 */
+    static void applyPositionFromSettings(final Context ctx) {
+        // 跟随模式没有独立行，位置就是系统原按钮的位置，不需要处理。
+        final ViewGroup row = sSecondRow;
+        if (row == null || row.getParent() == null) return;
+        row.post(() -> {
+            try {
+                ViewGroup.LayoutParams raw = row.getLayoutParams();
+                if (raw instanceof android.widget.FrameLayout.LayoutParams) {
+                    layoutSecondRow(ctx, row, (android.widget.FrameLayout.LayoutParams) raw);
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "applyPositionFromSettings: " + t.getMessage());
+            }
+        });
     }
 
     /**
-     * 直接加到 action_buttons 末尾（跟随系统原有按钮的位置）
+     * 第二行模式：另起一行放在 action_buttons 下方，用 marginStart / bottomMargin
+     * 把 X（0-100%）和 Y（0-100% → 0-48dp）映射成像素位置。
      */
-    private void addToActionButtons(ViewGroup actionsParent, Button btn,
+    @SuppressLint("DiscouragedApi")
+    private void ensureSecondRow(ViewGroup actionsParent, Button btn,
             android.content.res.Resources res, String pkg) {
-        int abId = res.getIdentifier("action_buttons", "id", pkg);
-        LinearLayout actionButtons = (LinearLayout) actionsParent.findViewById(abId);
-        if (actionButtons == null) return;
+        Context ctx = actionsParent.getContext();
 
-        // 去重
-        for (int i = 0; i < actionButtons.getChildCount(); i++) {
-            View child = actionButtons.getChildAt(i);
-            if (child.getTag() != null && "bubble_button".equals(child.getTag().toString())) {
-                bubbleButton = child;
-                return;
+        // 已经在第二行 → 只更新现有按钮，不重复添加
+        if (sSecondRow != null && sSecondRow.getParent() == actionsParent) {
+            for (int i = 0; i < sSecondRow.getChildCount(); i++) {
+                View child = sSecondRow.getChildAt(i);
+                if (child.getTag() != null && "bubble_button".equals(child.getTag().toString())) {
+                    bubbleButton = child;
+                    ViewGroup.LayoutParams lp = sSecondRow.getLayoutParams();
+                    if (lp instanceof android.widget.FrameLayout.LayoutParams) {
+                        layoutSecondRow(ctx, sSecondRow, (android.widget.FrameLayout.LayoutParams) lp);
+                    }
+                    return;
+                }
             }
+        } else if (sSecondRow != null) {
+            // 换了宿主界面（视图重建），旧行已经不在树上了
+            sSecondRow = null;
         }
 
-        // 添加到末尾
-        ViewGroup.MarginLayoutParams mlp = new ViewGroup.MarginLayoutParams(
+        LinearLayout row = new LinearLayout(ctx);
+        row.setTag("bubble_second_row");
+        row.setOrientation(LinearLayout.HORIZONTAL);
+
+        ViewGroup.MarginLayoutParams btnLp = new ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         int spId = res.getIdentifier("overview_actions_button_spacing", "dimen", pkg);
-        if (spId != 0) mlp.setMarginStart(res.getDimensionPixelSize(spId));
-        btn.setLayoutParams(mlp);
-        actionButtons.addView(btn);
+        if (spId != 0) btnLp.setMarginStart(res.getDimensionPixelSize(spId));
+        btn.setLayoutParams(btnLp);
+        row.addView(btn);
         bubbleButton = btn;
 
-        // 捕获 RecentsView（从 actionsParent 的 parent 链查找）
-        if (recentsViewInstance == null) {
-            try {
-                Class<?> rvCls = mLauncherClassLoader.loadClass(
-                        "com.android.quickstep.views.RecentsView");
-                View cur = actionsParent;
-                while (cur != null) {
-                    if (rvCls.isInstance(cur)) {
-                        recentsViewInstance = cur;
-                        Log.i(TAG, "Captured RecentsView in follow mode: " + cur);
-                        break;
-                    }
-                    cur = (cur.getParent() instanceof View) ? (View) cur.getParent() : null;
-                }
-            } catch (Throwable t) {
-                Log.w(TAG, "Capture RecentsView failed: " + t.getMessage());
-            }
-        }
+        android.widget.FrameLayout.LayoutParams rowLp = new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rowLp.gravity = android.view.Gravity.START | android.view.Gravity.BOTTOM;
 
-        Log.i(TAG, "Bubble button added to action_buttons (follow mode)");
+        int abId = res.getIdentifier("action_buttons", "id", pkg);
+        int insertIndex = 0;
+        View abv = actionsParent.findViewById(abId);
+        if (abv != null) insertIndex = actionsParent.indexOfChild(abv) + 1;
+        actionsParent.addView(row, insertIndex, rowLp);
+        sSecondRow = row;
+
+        layoutSecondRow(ctx, row, rowLp);
+        row.post(() -> layoutSecondRow(ctx, row,
+                (android.widget.FrameLayout.LayoutParams) row.getLayoutParams()));
+
+        // 透明度跟着原按钮栏走，切换动画时不会突然显形
+        final View abRef = abv;
+        row.post(() -> actionsParent.getViewTreeObserver().addOnPreDrawListener(
+                new ViewTreeObserver.OnPreDrawListener() {
+                    private int lastX = Integer.MIN_VALUE;
+                    private int lastY = Integer.MIN_VALUE;
+
+                    @Override public boolean onPreDraw() {
+                        ViewGroup live = sSecondRow;
+                        if (live == null || live.getWidth() <= 0) return true;
+                        int px = ModuleSettings.getPosX(ctx);
+                        int py = ModuleSettings.getPosY(ctx);
+                        if (px != lastX || py != lastY) {
+                            ViewGroup.LayoutParams lp = live.getLayoutParams();
+                            if (lp instanceof android.widget.FrameLayout.LayoutParams) {
+                                layoutSecondRow(ctx, live, (android.widget.FrameLayout.LayoutParams) lp);
+                            }
+                            lastX = px;
+                            lastY = py;
+                        }
+                        if (abRef != null) live.setAlpha(abRef.getAlpha());
+                        return true;
+                    }
+                }));
+        Log.i(TAG, "bubble button placed on second row");
+    }
+
+    /** 把 X/Y 百分比换算成 margin，把整行摆到操作栏下方的第二行。 */
+    private static void layoutSecondRow(Context ctx, ViewGroup row,
+            android.widget.FrameLayout.LayoutParams lp) {
+        android.util.DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+        float density = dm.density;
+        ViewGroup parent = (ViewGroup) row.getParent();
+        if (parent == null) return;
+
+        int parentWidth = parent.getWidth() > 0 ? parent.getWidth() : dm.widthPixels;
+        int parentHeight = parent.getHeight() > 0 ? parent.getHeight() : dm.heightPixels;
+
+        int rowWidth = row.getWidth() > 0 ? row.getWidth() : row.getMeasuredWidth();
+        if (rowWidth <= 0 && row.getChildCount() > 0) rowWidth = row.getChildAt(0).getMeasuredWidth();
+        int rowHeight = row.getHeight() > 0 ? row.getHeight() : row.getMeasuredHeight();
+
+        // 底边基线：紧贴底部留 56dp（原操作栏的高度 + 间距）
+        int baseTop = parentHeight - rowHeight - (int) (56 * density);
+        // Y：0% 在基线，100% 再往上 48dp
+        int up = (int) (Math.min(ModuleSettings.getPosY(ctx) * 1.4f, 100f) / 100f * (48 * density));
+        lp.gravity = android.view.Gravity.START | android.view.Gravity.TOP;
+        lp.topMargin = Math.max(0, baseTop - up);
+
+        // X：0%=贴左，50%=居中，100%=贴右（减去图标左置造成的视觉偏移）
+        int maxMargin = Math.max(0, parentWidth - rowWidth);
+        int iconOffset = (int) (13 * density);
+        int marginStart = (int) ((ModuleSettings.getPosX(ctx) / 100f) * maxMargin) - iconOffset;
+        lp.setMarginStart(Math.max(0, Math.min(marginStart, maxMargin)));
+
+        row.setLayoutParams(lp);
     }
 
     private boolean isClearAllButton(View child) {

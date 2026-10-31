@@ -13,6 +13,12 @@ public class ModuleSettings {
     public static final String KEY_MENU_ENABLED = "menu_enabled";
     public static final String KEY_ACTION_BAR_ENABLED = "action_bar_enabled";
     public static final String KEY_SYSTEMUI_BUBBLE_ENABLED = "systemui_bubble_enabled";
+    /** 气泡广播开关：允许手势应用（如 GestureEVO）通过广播把应用送进气泡小窗 */
+    public static final String KEY_BUBBLE_BROADCAST_ENABLED = "bubble_broadcast_enabled";
+    /** 操作栏按钮位置：0=跟随原按钮，1=第二行（可用 X/Y 微调） */
+    public static final String KEY_POSITION_MODE = "position_mode";
+    public static final String KEY_POS_X = "pos_x"; // 0-100，50=居中
+    public static final String KEY_POS_Y = "pos_y"; // 0-100，50=居中
     /** 允许手势应用（GestureEVO）通过广播把应用送进气泡小窗 */
     public static final String KEY_EXTERNAL_TRIGGER_ENABLED = "external_trigger_enabled";
     private static final Uri SETTINGS_URI = SettingsProvider.CONTENT_URI;
@@ -92,6 +98,42 @@ public class ModuleSettings {
     }
     public static void setSystemUiBubbleEnabled(Context ctx, boolean v) {
         getPrefs(ctx).edit().putBoolean(KEY_SYSTEMUI_BUBBLE_ENABLED, v).apply();
+    }
+
+    /** 气泡广播开关（后台接收器是否注册 + 每次请求是否放行） */
+    public static boolean isBubbleBroadcastEnabled(Context ctx) {
+        return getBoolean(ctx, KEY_BUBBLE_BROADCAST_ENABLED, true);
+    }
+    public static void setBubbleBroadcastEnabled(Context ctx, boolean v) {
+        getPrefs(ctx).edit().putBoolean(KEY_BUBBLE_BROADCAST_ENABLED, v).apply();
+    }
+
+    /** 0=跟随原按钮  1=第二行 */
+    public static int getPositionMode(Context ctx) {
+        return getInt(ctx, KEY_POSITION_MODE, 0);
+    }
+    public static void setPositionMode(Context ctx, int v) {
+        getPrefs(ctx).edit().putInt(KEY_POSITION_MODE, v).apply();
+    }
+
+    /** X 轴 0-100，50=居中（含图标偏移补偿） */
+    public static int getPosX(Context ctx) {
+        return getInt(ctx, KEY_POS_X, 50);
+    }
+    public static void setPosX(Context ctx, int v) {
+        getPrefs(ctx).edit().putInt(KEY_POS_X, clampPercent(v)).apply();
+    }
+
+    /** Y 轴 0-100，50=居中；数值越大越靠上 */
+    public static int getPosY(Context ctx) {
+        return getInt(ctx, KEY_POS_Y, 50);
+    }
+    public static void setPosY(Context ctx, int v) {
+        getPrefs(ctx).edit().putInt(KEY_POS_Y, clampPercent(v)).apply();
+    }
+
+    private static int clampPercent(int v) {
+        return Math.max(0, Math.min(100, v));
     }
 
     /** 手势外部触发（广播）开关 */

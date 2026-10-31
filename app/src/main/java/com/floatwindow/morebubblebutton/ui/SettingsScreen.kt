@@ -22,6 +22,10 @@ fun SettingsScreen() {
     var menuEnabled by remember { mutableStateOf(ModuleSettings.isMenuEnabled(ctx)) }
     var actionBarEnabled by remember { mutableStateOf(ModuleSettings.isActionBarEnabled(ctx)) }
     var systemUiBubbleEnabled by remember { mutableStateOf(ModuleSettings.isSystemUiBubbleEnabled(ctx)) }
+    var broadcastEnabled by remember { mutableStateOf(ModuleSettings.isBubbleBroadcastEnabled(ctx)) }
+    var positionMode by remember { mutableIntStateOf(ModuleSettings.getPositionMode(ctx)) }
+    var sliderX by remember { mutableFloatStateOf(ModuleSettings.getPosX(ctx).toFloat()) }
+    var sliderY by remember { mutableFloatStateOf(ModuleSettings.getPosY(ctx).toFloat()) }
 
     Column(
         modifier = Modifier
@@ -77,7 +81,181 @@ fun SettingsScreen() {
                         ModuleSettings.setSystemUiBubbleEnabled(ctx, it)
                     }
                 )
+                HorizontalDivider()
+                SwitchPreferenceRow(
+                    title = "气泡广播",
+                    subtitle = "允许手势应用（如 GestureEVO）通过广播把应用直接送进气泡小窗；关闭后不再接收任何外部请求",
+                    checked = broadcastEnabled,
+                    onCheckedChange = {
+                        broadcastEnabled = it
+                        ModuleSettings.setBubbleBroadcastEnabled(ctx, it)
+                    }
+                )
             }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text(
+            text = "位置微调",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+            )
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "按钮显示行",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    SegmentedButton(
+                        selected = positionMode == 0,
+                        onClick = {
+                            positionMode = 0
+                            ModuleSettings.setPositionMode(ctx, 0)
+                            try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                        label = { Text("跟随原按钮") }
+                    )
+                    SegmentedButton(
+                        selected = positionMode == 1,
+                        onClick = {
+                            positionMode = 1
+                            ModuleSettings.setPositionMode(ctx, 1)
+                            try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                        label = { Text("第二行") }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "改动后回到多任务界面（或在多任务界面重新进入）生效。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+                FineTuneSlider(
+                    title = "X 轴（← 左 | 右 →）",
+                    value = sliderX,
+                    onValueChange = { sliderX = it },
+                    onCommit = {
+                        ModuleSettings.setPosX(ctx, sliderX.toInt())
+                        try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                    },
+                    onStep = { delta ->
+                        sliderX = (sliderX + delta).coerceIn(0f, 100f)
+                        ModuleSettings.setPosX(ctx, sliderX.toInt())
+                        try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                    }
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                FineTuneSlider(
+                    title = "Y 轴（↑ 上 | 下 ↓）",
+                    value = sliderY,
+                    onValueChange = { sliderY = it },
+                    onCommit = {
+                        ModuleSettings.setPosY(ctx, sliderY.toInt())
+                        try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                    },
+                    onStep = { delta ->
+                        sliderY = (sliderY + delta).coerceIn(0f, 100f)
+                        ModuleSettings.setPosY(ctx, sliderY.toInt())
+                        try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                    }
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        sliderX = 50f
+                        sliderY = 50f
+                        ModuleSettings.setPosX(ctx, 50)
+                        ModuleSettings.setPosY(ctx, 50)
+                        try { MoreBubbleHookModule.applyPositionFromSettings(ctx) } catch (_: Throwable) {}
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("恢复默认 X/Y 位置")
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Button(
+            onClick = {
+                // 只重启 Launcher 与 SystemUI：模块会在这两个进程里重新加载
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    try {
+                        val p = Runtime.getRuntime().exec(
+                            arrayOf(
+                                "su", "-c",
+                                "killall com.google.android.apps.nexuslauncher com.android.launcher3 com.android.systemui 2>/dev/null; sleep 1"
+                            )
+                        )
+                        p.waitFor()
+                    } catch (_: Throwable) {}
+                }, 300)
+            },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error
+            )
+        ) {
+            Icon(Icons.Default.Refresh, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("重启启动器 + 系统界面")
+        }
+
+        Spacer(modifier = Modifier.height(48.dp))
+    }
+}
+
+@Composable
+private fun FineTuneSlider(
+    title: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    onCommit: () -> Unit,
+    onStep: (Float) -> Unit
+) {
+    Text(
+        text = "$title: ${value.toInt()}%",
+        style = MaterialTheme.typography.bodyMedium
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        FilledTonalIconButton(onClick = { onStep(-1f) }) {
+            Text("−", style = MaterialTheme.typography.titleLarge)
+        }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            onValueChangeFinished = onCommit,
+            valueRange = 0f..100f,
+            steps = 99,
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 8.dp)
+        )
+        FilledTonalIconButton(onClick = { onStep(1f) }) {
+            Text("+", style = MaterialTheme.typography.titleLarge)
         }
     }
 }
