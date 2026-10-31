@@ -43,7 +43,7 @@ public class MoreBubbleHookModule extends XposedModule {
         // 只用来确认模块真的进了进程：logcat -s MoreBubbleModule 之前看不到任何一行，
         // 说明 SystemUI 里要么没加载模块，要么热重载被拒（LSPosed 日志：refused to be hot reloaded）。
         Log.i(TAG, "module loaded: process=" + param.getProcessName()
-                + " first=" + param.isFirstPackage() + " api=" + getApiVersion());
+                + " api=" + getApiVersion());
     }
 
 
