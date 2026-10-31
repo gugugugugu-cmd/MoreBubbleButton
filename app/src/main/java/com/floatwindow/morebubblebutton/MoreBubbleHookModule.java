@@ -37,7 +37,7 @@ public class MoreBubbleHookModule extends XposedModule {
     /** 编译标记：日志里能直接看出跑的是哪一版 */
     /** 气泡底部按钮（诊断显示用） */
     private static volatile View sLastCornerButton;
-    private static final String BUILD_TAG = "v1.30-ctx-fix";
+    private static final String BUILD_TAG = "v1.31-bubble-ctor";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -384,6 +384,35 @@ public class MoreBubbleHookModule extends XposedModule {
             }
         } catch (Throwable t) {
             Log.w(TAG, "Hook BubbleTaskViewListener.onInitialized: " + t.getMessage());
+        }
+
+        // 最彻底的位置：hook Bubble 的两个构造函数。对象一旦创建就把启动目标换掉，
+        // 之后无论谁在什么时机读 mIntent / mPendingIntent，拿到的都是新值。
+        // （上一版在 onInitialized 入口改字段太晚——Runnable 早已捕获了旧值。）
+        try {
+            Class<?> bubbleCls2 = cl.loadClass("com.android.wm.shell.bubbles.Bubble");
+            for (java.lang.reflect.Constructor<?> ctor : bubbleCls2.getDeclaredConstructors()) {
+                if (ctor.getParameterCount() != 5) continue;
+                hook(ctor).intercept(chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        Object self = chain.getThisObject();
+                        Context c = sSystemUiContext;
+                        if (c == null) {
+                            // 用 ActivityThread 拿不到时，退到 Bubble 自己的 mContext 不可得，
+                            // 只能等第一次成功的路径回填
+                            Log.i(TAG, "ctor bubble: ctx still null, defer");
+                        }
+                        retargetBubble(c, self, "ctor");
+                    } catch (Throwable t) {
+                        Log.w(TAG, "ctor retarget: " + t.getMessage());
+                    }
+                    return result;
+                });
+                Log.i(TAG, "Hooked Bubble ctor(" + ctor.getParameterCount() + ")");
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Hook Bubble ctor: " + t.getMessage());
         }
 
         installLandscapeLaunchBounds(cl);
