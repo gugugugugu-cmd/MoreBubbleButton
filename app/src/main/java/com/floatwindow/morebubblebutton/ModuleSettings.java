@@ -18,6 +18,8 @@ public class ModuleSettings {
     public static final String KEY_SYSTEMUI_BUBBLE_ENABLED = "systemui_bubble_enabled";
     /** 双击气泡小窗顶部 -> 全屏展开（默认开） */
     public static final String KEY_BUBBLE_DOUBLE_TAP_FULLSCREEN = "bubble_double_tap_fullscreen";
+    /** 允许手势应用（GestureEVO）通过广播把应用送进气泡小窗 */
+    public static final String KEY_EXTERNAL_TRIGGER_ENABLED = "external_trigger_enabled";
     private static final Uri SETTINGS_URI = SettingsProvider.CONTENT_URI;
     private static final long REMOTE_CACHE_MS = 250L;
     private static volatile long sRemoteCacheAt;
@@ -127,6 +129,14 @@ public class ModuleSettings {
     }
     public static void setDoubleTapFullscreenEnabled(Context ctx, boolean v) {
         getPrefs(ctx).edit().putBoolean(KEY_BUBBLE_DOUBLE_TAP_FULLSCREEN, v).apply();
+    }
+
+    /** 手势外部触发（广播）开关 */
+    public static boolean isExternalTriggerEnabled(Context ctx) {
+        return getBoolean(ctx, KEY_EXTERNAL_TRIGGER_ENABLED, true);
+    }
+    public static void setExternalTriggerEnabled(Context ctx, boolean v) {
+        getPrefs(ctx).edit().putBoolean(KEY_EXTERNAL_TRIGGER_ENABLED, v).apply();
     }
 
     private static int clampPercent(int v) {

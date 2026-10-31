@@ -343,7 +343,85 @@ public class MoreBubbleHookModule extends XposedModule {
         // 9. Only the verified classic application bubble icon click path.
         new BubbleIconDoubleTap(this).install(cl);
 
+        // 10. 手势外部触发：BubblesManager 一创建就把广播接收器挂上去。
+        //     放在这里是因为只有拿到 manager 实例才能调用
+        //     BubbleController.expandStackAndSelectAppBubble。
+        //     注意 hook 构造函数时 proceed() 返回 null，新实例要从 chain.getThisObject() 取。
+        try {
+            Class<?> bubblesCls = cl.loadClass("com.android.systemui.wmshell.BubblesManager");
+            for (java.lang.reflect.Constructor<?> ctor : bubblesCls.getDeclaredConstructors()) {
+                hook(ctor).intercept(chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        Object self = chain.getThisObject();
+                        java.util.List<Object> args = chain.getArgs();
+                        Object arg0 = args != null && args.size() > 0 ? args.get(0) : null;
+                        Context appCtx = arg0 instanceof Context ? (Context) arg0 : null;
+                        BubbleBroadcastBridge.attach(appCtx, self);
+                    } catch (Throwable t) { Log.w(TAG, "attach bridge: " + t.getMessage()); }
+                    return result;
+                });
+            }
+            Log.i(TAG, "Hooked BubblesManager ctor for gesture bridge");
+        } catch (Throwable t) { Log.w(TAG, "Hook BubblesManager ctor: " + t.getMessage()); }
+
         Log.i(TAG, "All SystemUI hooks installed");
+    }
+
+    /**
+     * 手势触发的入口：没有 NotificationEntry，直接按包名/组件建一个应用气泡。
+     *
+     * <p>复用 {@link #expandAppBubbleA17} 里已经验证过的官方配方
+     * （Bubble + expandStackAndSelectAppBubble），并沿用模块对
+     * 「刚强制创建的气泡别被 Ranking/Channel 立刻移除」的保护。
+     */
+    static boolean showAppBubbleFromGesture(Object bubblesManager, Context ctx,
+            String pkg, String activityName, int userId) {
+        try {
+            Object bubblesImpl = getFieldSystemUi(bubblesManager, "mBubbles");
+            Object controller = bubblesImpl != null ? getFieldSystemUi(bubblesImpl, "this$0") : null;
+            if (controller == null) {
+                Log.w(TAG, "gesture bubble: BubbleController not found");
+                return false;
+            }
+            Intent launchIntent = ctx.getPackageManager().getLaunchIntentForPackage(pkg);
+            Intent intent = new Intent(launchIntent != null ? launchIntent : new Intent());
+            intent.setPackage(pkg);
+            if (activityName != null && !activityName.isEmpty()) {
+                String cls = activityName.startsWith(".") ? pkg + activityName : activityName;
+                intent.setComponent(new ComponentName(pkg, cls));
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+
+            UserHandle user = (UserHandle) UserHandle.class.getMethod("of", int.class)
+                    .invoke(null, userId);
+
+            // 记下这个 key，让 dismissBubbleWithKey 的保护窗口生效
+            try {
+                Class<?> bubbleCls = controller.getClass().getClassLoader()
+                        .loadClass("com.android.wm.shell.bubbles.Bubble");
+                Method keyForApp = findMethodSystemUi(bubbleCls, "getAppBubbleKeyForApp",
+                        String.class, UserHandle.class);
+                if (keyForApp != null) {
+                    String key = (String) keyForApp.invoke(null, pkg, user);
+                    rememberForcedBubble(key);
+                }
+            } catch (Throwable ignored) {}
+
+            Runnable work = () -> {
+                boolean done = expandAppBubbleA17(controller, intent, user, "gesture");
+                if (!done) done = expandAppBubbleLegacy(controller, intent, user, "gesture");
+                Log.i(TAG, "gesture bubble " + pkg + ": " + (done ? "expanded" : "failed"));
+            };
+            Object executor = getFieldSystemUi(controller, "mMainExecutor");
+            Method execute = executor != null
+                    ? findMethodSystemUi(executor.getClass(), "execute", Runnable.class) : null;
+            if (execute != null) execute.invoke(executor, work); else work.run();
+            return true;
+        } catch (Throwable t) {
+            Log.w(TAG, "gesture bubble failed: " + t.getMessage());
+            return false;
+        }
     }
 
     private static boolean expandAppBubbleFromNotification(Object bubblesManager, Object entry, String reason) {

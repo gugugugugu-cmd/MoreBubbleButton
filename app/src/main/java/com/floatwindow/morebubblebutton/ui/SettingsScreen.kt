@@ -23,6 +23,7 @@ fun SettingsScreen() {
     var actionBarEnabled by remember { mutableStateOf(ModuleSettings.isActionBarEnabled(ctx)) }
     var systemUiBubbleEnabled by remember { mutableStateOf(ModuleSettings.isSystemUiBubbleEnabled(ctx)) }
     var doubleTapFullscreenEnabled by remember { mutableStateOf(ModuleSettings.isDoubleTapFullscreenEnabled(ctx)) }
+    var externalTriggerEnabled by remember { mutableStateOf(ModuleSettings.isExternalTriggerEnabled(ctx)) }
     var positionMode by remember { mutableIntStateOf(ModuleSettings.getPositionMode(ctx)) }
     var sliderX by remember { mutableFloatStateOf(ModuleSettings.getPosX(ctx).toFloat()) }
     var sliderY by remember { mutableFloatStateOf(ModuleSettings.getPosY(ctx).toFloat()) }
@@ -89,6 +90,16 @@ fun SettingsScreen() {
                     onCheckedChange = {
                         doubleTapFullscreenEnabled = it
                         ModuleSettings.setDoubleTapFullscreenEnabled(ctx, it)
+                    }
+                )
+                HorizontalDivider()
+                SwitchPreferenceRow(
+                    title = "手势气泡入口",
+                    subtitle = "允许 GestureEVO 等手势应用通过广播把应用直接送进气泡小窗",
+                    checked = externalTriggerEnabled,
+                    onCheckedChange = {
+                        externalTriggerEnabled = it
+                        ModuleSettings.setExternalTriggerEnabled(ctx, it)
                     }
                 )
             }

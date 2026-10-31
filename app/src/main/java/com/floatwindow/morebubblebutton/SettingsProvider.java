@@ -28,6 +28,7 @@ public class SettingsProvider extends ContentProvider {
         add(cursor, ModuleSettings.KEY_POS_Y, prefs.getInt(ModuleSettings.KEY_POS_Y, 50));
         add(cursor, ModuleSettings.KEY_SYSTEMUI_BUBBLE_ENABLED, prefs.getBoolean(ModuleSettings.KEY_SYSTEMUI_BUBBLE_ENABLED, true));
         add(cursor, ModuleSettings.KEY_BUBBLE_DOUBLE_TAP_FULLSCREEN, prefs.getBoolean(ModuleSettings.KEY_BUBBLE_DOUBLE_TAP_FULLSCREEN, true));
+        add(cursor, ModuleSettings.KEY_EXTERNAL_TRIGGER_ENABLED, prefs.getBoolean(ModuleSettings.KEY_EXTERNAL_TRIGGER_ENABLED, true));
         return cursor;
     }
 
