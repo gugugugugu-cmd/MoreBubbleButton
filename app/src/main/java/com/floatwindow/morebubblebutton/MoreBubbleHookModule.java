@@ -35,7 +35,7 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     /** 编译标记：日志里能直接看出跑的是哪一版 */
-    private static final String BUILD_TAG = "v1.27-telegram-setbubble";
+    private static final String BUILD_TAG = "v1.28-telegram-diag";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -400,12 +400,16 @@ public class MoreBubbleHookModule extends XposedModule {
 
     /** 把 Bubble 的启动目标换成嵌入式 Activity（mIntent + mPendingIntent 都换）。 */
     private static void retargetBubble(Context ctx, Object bubble, String from) {
-        if (ctx == null || bubble == null) return;
+        if (ctx == null) { Log.i(TAG, "retarget(" + from + "): ctx is null, skip"); return; }
+        if (bubble == null) { Log.i(TAG, "retarget(" + from + "): bubble is null, skip"); return; }
         Intent currentIntent = (Intent) getField(bubble, "mIntent");
         String pkg = (String) getField(bubble, "mPackageName");
         if (pkg == null && currentIntent != null) pkg = currentIntent.getPackage();
+        String forced = pkg != null ? EMBEDDABLE_OVERRIDES.get(pkg) : null;
+        Log.i(TAG, "retarget(" + from + "): pkg=" + pkg + " forced=" + forced
+                + " intent=" + (currentIntent != null)
+                + " keys=" + EMBEDDABLE_OVERRIDES.keySet());
         if (pkg == null) return;
-        String forced = EMBEDDABLE_OVERRIDES.get(pkg);
         if (forced == null) return;
 
         Intent target = new Intent(currentIntent != null ? currentIntent : new Intent());
