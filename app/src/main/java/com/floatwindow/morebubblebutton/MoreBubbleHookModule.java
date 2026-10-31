@@ -876,22 +876,25 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "corner action: close + fullscreen buttons share row "
                     + parent.getClass().getSimpleName());
             // 调试用：几帧后把结果打到日志里（父容器类型 / 容器 id / 两个子 View 的可见性与尺寸），
-            // 下次“按钮丢失”时直接看这三行，不用再猜是容器被隐藏还是布局塌了。
+            // 下次“按钮丢失”时直接看这几行，不用再猜是容器被隐藏还是布局塌了。
+            final SyncCornerLayout dumpRow = row;
+            final View dumpClose = manageButton;
+            final View dumpClone = clone;
             row.post(new Runnable() {
                 @Override public void run() {
                     try {
                         Log.i(TAG, "corner row: parent=" + parent.getClass().getSimpleName()
                                 + "#" + Integer.toHexString(System.identityHashCode(parent))
-                                + " rowId=" + (row.getId() == View.NO_ID ? "none" : "0x" + Integer.toHexString(row.getId()))
-                                + " row=" + row.getWidth() + "x" + row.getHeight()
-                                + " vis=" + row.getVisibility());
+                                + " rowId=" + (dumpRow.getId() == View.NO_ID ? "none" : "0x" + Integer.toHexString(dumpRow.getId()))
+                                + " row=" + dumpRow.getWidth() + "x" + dumpRow.getHeight()
+                                + " vis=" + dumpRow.getVisibility());
                         if (template != null) Log.i(TAG, "corner button template vis=" + template.getVisibility()
                                 + " alpha=" + template.getAlpha() + " size=" + template.getMeasuredWidth()
                                 + "x" + template.getMeasuredHeight());
-                        if (clone != null) Log.i(TAG, "corner button fullscreen vis=" + clone.getVisibility()
-                                + " size=" + clone.getWidth() + "x" + clone.getHeight());
-                        if (manageButton != null) Log.i(TAG, "corner button close vis=" + manageButton.getVisibility()
-                                + " size=" + manageButton.getWidth() + "x" + manageButton.getHeight());
+                        if (dumpClone != null) Log.i(TAG, "corner button fullscreen vis=" + dumpClone.getVisibility()
+                                + " size=" + dumpClone.getWidth() + "x" + dumpClone.getHeight());
+                        if (dumpClose != null) Log.i(TAG, "corner button close vis=" + dumpClose.getVisibility()
+                                + " size=" + dumpClose.getWidth() + "x" + dumpClose.getHeight());
                     } catch (Throwable t) { Log.i(TAG, "corner row dump: " + t.getMessage()); }
                 }
             });
