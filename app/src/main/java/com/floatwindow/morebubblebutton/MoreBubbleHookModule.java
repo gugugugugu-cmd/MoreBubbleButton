@@ -65,6 +65,8 @@ public class MoreBubbleHookModule extends XposedModule {
     }
 
     private ClassLoader mSystemUiClassLoader;
+    /** SystemUI 的 Context：横屏判定与包名解析用 */
+    private static android.content.Context sSystemUiContext;
     private static final Map<String, Long> sForcedBubbleKeys = new ConcurrentHashMap<>();
     private static final long FORCED_BUBBLE_GRACE_MS = 8000L;
 
@@ -300,6 +302,7 @@ public class MoreBubbleHookModule extends XposedModule {
                         java.util.List<Object> args = chain.getArgs();
                         Object arg0 = args != null && args.size() > 0 ? args.get(0) : null;
                         Context appCtx = arg0 instanceof Context ? (Context) arg0 : null;
+                        if (appCtx != null) sSystemUiContext = appCtx;
                         BubbleBroadcastBridge.attach(appCtx, self);
                     } catch (Throwable t) { Log.w(TAG, "attach bridge: " + t.getMessage()); }
                     return result;
@@ -308,7 +311,7 @@ public class MoreBubbleHookModule extends XposedModule {
             Log.i(TAG, "Hooked BubblesManager ctor for gesture bridge");
         } catch (Throwable t) { Log.w(TAG, "Hook BubblesManager ctor: " + t.getMessage()); }
 
-        installLandscapeBubbleFix(cl);
+        installLandscapeLaunchBounds(cl);
 
         Log.i(TAG, "All SystemUI hooks installed");
     }
@@ -1203,139 +1206,135 @@ public class MoreBubbleHookModule extends XposedModule {
         } catch (Throwable t) { Log.e(TAG, "Hook addMenuOptions: " + t.getMessage()); }
     }
 
-    // ==================== 横屏气泡尺寸修正 ====================
+    // ==================== 横屏应用进竖屏气泡：交换 launch bounds ====================
     //
-    // A17 的 BubblePositioner 在「手机 + 横屏」时会走平板分支：
-    //   getExpandedViewContainerPadding 把整个屏幕宽度算进一侧内边距，
-    //   getMaxExpandedViewHeight 又重复扣掉顶栏/指针高度，
-    // 结果 TaskView 只剩角落里一条缝（气泡窗口看起来是一条黑条）。
+    // TaskViewTransitions.prepareActivityOptions(options, bounds, controller) 只做三件事：
+    //   setLaunchBounds(bounds) / setLaunchWindowingMode(6) / setRemoveWithTaskOrganizer(true)
+    // 全程没有 rotation / viewport 换算。于是任务按「传入矩形的坐标系」排版：
+    // 竖屏系统里气泡窗口是 1100×1700 这样的竖条，横屏游戏撑满后就被裁成「上半部分有内容、
+    // 下半部分黑」——就是用户看到的样子。
     //
-    // 这里在 hook 之后用反射把结果改回合理值：
-    //   内边距 → 左右各 mExpandedViewPadding（竖屏同款规则）
-    //   高度   → 屏幕高度 - 上下 insets
-    //   宽度   → 屏宽 - 左右内边距
-    // 只对「手机 + 横屏」生效，竖屏/平板完全不动。
+    // 这里的做法：在它执行完之后，对「目标 Activity 要求横屏 + 系统当前竖屏」的情况，
+    // 把 launch bounds 换成宽高互换的矩形（宽=原高、高=原宽），任务就按横屏排版，
+    // 再由 TaskView 的 crop 去适配窗口。设置里可以关掉。
 
-    private static java.lang.reflect.Field sPositionerDeviceConfigField;
-    private static boolean sPositionerPatched;
+    /** 已判定过的包名 → 是否要求横屏，避免每次都查一次 ActivityInfo。 */
+    private static final Map<String, Boolean> sLandscapeApps = new ConcurrentHashMap<>();
+    private static volatile Boolean sSystemLandscape;
 
-    /** 在 SystemUI 装载时安装：命中 BubblePositioner 的三个 public final 方法。 */
-    private void installLandscapeBubbleFix(ClassLoader cl) {
+    private void installLandscapeLaunchBounds(ClassLoader cl) {
         try {
-            Class<?> posCls = cl.loadClass("com.android.wm.shell.bubbles.BubblePositioner");
-            try {
-                sPositionerDeviceConfigField = posCls.getDeclaredField("mDeviceConfig");
-                sPositionerDeviceConfigField.setAccessible(true);
-            } catch (Throwable ignored) {}
-
-            Class<?> insetsCls = cl.loadClass("com.android.wm.shell.shared.bubbles.DeviceConfig");
-            java.lang.reflect.Field landscapeField = insetsCls.getDeclaredField("isLandscape");
-            landscapeField.setAccessible(true);
-
-            // 1) 内边距
-            try {
-                String name = "getExpandedViewContainerPadding";
-                java.lang.reflect.Method m = posCls.getMethod(name, boolean.class, boolean.class);
-                hook(m).intercept(chain -> {
-                    Object result = chain.proceed();
-                    try {
-                        if (result instanceof int[]
-                                && isPhoneLandscape(chain.getThisObject(), landscapeField)) {
-                            int[] pad = (int[]) result;
-                            int p = paddingOf(chain.getThisObject());
-                            pad[0] = p;
-                            pad[2] = p;
-                            pad[1] = 0;
-                            pad[3] = 0;
-                            Log.i(TAG, "landscape fix: container padding -> " + p);
-                        }
-                    } catch (Throwable t) {
-                        Log.w(TAG, "landscape padding fix: " + t.getMessage());
-                    }
-                    return result;
-                });
-                sPositionerPatched = true;
-            } catch (Throwable t) {
-                Log.w(TAG, "landscape fix: padding hook failed: " + t.getMessage());
+            Class<?> cls = cl.loadClass("com.android.wm.shell.taskview.TaskViewTransitions");
+            java.lang.reflect.Method target = null;
+            for (java.lang.reflect.Method m : cls.getDeclaredMethods()) {
+                if (!"prepareActivityOptions".equals(m.getName()) || m.getParameterCount() != 3) continue;
+                Class<?>[] p = m.getParameterTypes();
+                if (p[0] == android.app.ActivityOptions.class && p[1] == android.graphics.Rect.class) {
+                    target = m;
+                    break;
+                }
             }
-
-            // 2) 最大高度
-            try {
-                java.lang.reflect.Method m = posCls.getMethod("getMaxExpandedViewHeight", boolean.class);
-                hook(m).intercept(chain -> {
-                    try {
-                        if (isPhoneLandscape(chain.getThisObject(), landscapeField)) {
-                            android.graphics.Rect screen = (android.graphics.Rect)
-                                    getField(chain.getThisObject(), "mScreenRect");
-                            android.graphics.Insets insets = (android.graphics.Insets)
-                                    getField(chain.getThisObject(), "mInsets");
-                            if (screen != null && insets != null) {
-                                int h = screen.height() - insets.top - insets.bottom;
-                                if (h > 0) {
-                                    Log.i(TAG, "landscape fix: max height -> " + h);
-                                    return h;
-                                }
-                            }
-                        }
-                    } catch (Throwable t) {
-                        Log.w(TAG, "landscape height fix: " + t.getMessage());
-                    }
-                    return chain.proceed();
-                });
-            } catch (Throwable t) {
-                Log.w(TAG, "landscape fix: height hook failed: " + t.getMessage());
+            if (target == null) {
+                Log.w(TAG, "landscape launch: prepareActivityOptions(ActivityOptions,Rect,*) not found");
+                return;
             }
-
-            // 3) 内容宽度
-            try {
-                java.lang.reflect.Method m = posCls.getMethod("getTaskViewContentWidth", boolean.class);
-                hook(m).intercept(chain -> {
-                    try {
-                        if (isPhoneLandscape(chain.getThisObject(), landscapeField)) {
-                            android.graphics.Rect screen = (android.graphics.Rect)
-                                    getField(chain.getThisObject(), "mScreenRect");
-                            if (screen != null) {
-                                int w = screen.width() - paddingOf(chain.getThisObject()) * 2;
-                                if (w > 0) {
-                                    Log.i(TAG, "landscape fix: content width -> " + w);
-                                    return w;
-                                }
-                            }
-                        }
-                    } catch (Throwable t) {
-                        Log.w(TAG, "landscape width fix: " + t.getMessage());
+            hook(target).intercept(chain -> {
+                Object result = chain.proceed();
+                try {
+                    Object options = chain.getArg(0);
+                    Object boundsObj = chain.getArg(1);
+                    Object controller = chain.getArg(2);
+                    if (options instanceof android.app.ActivityOptions
+                            && boundsObj instanceof android.graphics.Rect
+                            && controller != null) {
+                        swapBoundsForLandscapeApp((android.app.ActivityOptions) options,
+                                (android.graphics.Rect) boundsObj, controller);
                     }
-                    return chain.proceed();
-                });
-            } catch (Throwable t) {
-                Log.w(TAG, "landscape fix: width hook failed: " + t.getMessage());
-            }
-
-            Log.i(TAG, "landscape bubble fix installed: " + sPositionerPatched);
+                } catch (Throwable t) {
+                    Log.w(TAG, "landscape launch: " + t.getMessage());
+                }
+                return result;
+            });
+            Log.i(TAG, "landscape launch bounds hook installed");
         } catch (Throwable t) {
-            Log.w(TAG, "landscape bubble fix unavailable: " + t.getMessage());
+            Log.w(TAG, "landscape launch hook failed: " + t.getMessage());
         }
     }
 
-    /** 手机 + 横屏：对应 A17 里 showBubblesVertically() 为 true、isLargeScreen 为 false。 */
-    private static boolean isPhoneLandscape(Object positioner, java.lang.reflect.Field landscapeField) {
+    private static void swapBoundsForLandscapeApp(android.app.ActivityOptions options,
+            android.graphics.Rect bounds, Object controller) {
+        if (isSystemLandscape()) return;
+        String pkg = taskPackageOf(controller);
+        if (pkg == null || !isLandscapeApp(pkg)) return;
+        if (bounds.width() <= 0 || bounds.height() <= 0) return;
+        android.graphics.Rect swapped = new android.graphics.Rect(
+                bounds.left, bounds.top,
+                bounds.left + bounds.height(), bounds.top + bounds.width());
+        options.setLaunchBounds(swapped);
+        Log.i(TAG, "landscape launch: " + pkg + " bounds " + bounds.width() + "x" + bounds.height()
+                + " -> " + swapped.width() + "x" + swapped.height());
+    }
+
+    /** 从 TaskViewTaskController 里拿目标包名：mPendingInfo / mTaskInfo → baseActivity.componentName。 */
+    private static String taskPackageOf(Object controller) {
+        for (String field : new String[]{"mPendingInfo", "mTaskInfo"}) {
+            try {
+                Object info = getField(controller, field);
+                if (info == null) continue;
+                Object base = getField(info, "baseActivity");
+                if (base != null) {
+                    Object cmp = invoke(base, "getComponentName");
+                    if (cmp instanceof android.content.ComponentName) {
+                        return ((android.content.ComponentName) cmp).getPackageName();
+                    }
+                    Object pkgName = invoke(base, "getPackageName");
+                    if (pkgName instanceof String) return (String) pkgName;
+                }
+            } catch (Throwable ignored) {}
+        }
+        return null;
+    }
+
+    /** 目标应用是否把 Activity 固定在横屏（screenOrientation=landscape/sensorLandscape…）。 */
+    private static boolean isLandscapeApp(String pkg) {
+        String packageName = pkg;
+        android.content.pm.ActivityInfo info = null;
+        Boolean cached = sLandscapeApps.get(packageName);
+        if (cached != null) return cached;
         try {
-            Object cfg = sPositionerDeviceConfigField != null
-                    ? sPositionerDeviceConfigField.get(positioner)
-                    : getField(positioner, "mDeviceConfig");
-            if (cfg == null) return false;
-            boolean landscape = landscapeField.getBoolean(cfg);
-            Object large = getField(cfg, "isLargeScreen");
-            boolean isLarge = large instanceof Boolean && (Boolean) large;
-            return landscape && !isLarge;
+            android.content.Context sysui = currentSystemUiContext();
+            if (sysui == null) return false;
+            android.content.pm.PackageManager pm = sysui.getPackageManager();
+            android.content.Intent launch = pm.getLaunchIntentForPackage(packageName);
+            if (launch == null) return false;
+            info = pm.getActivityInfo(launch.getComponent(), 0);
+            int o = info.screenOrientation;
+            boolean landscape = o == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                    || o == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                    || o == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+                    || o == android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE;
+            sLandscapeApps.put(packageName, landscape);
+            return landscape;
         } catch (Throwable t) {
+            sLandscapeApps.put(packageName, false);
             return false;
         }
     }
 
-    private static int paddingOf(Object positioner) {
-        Object v = getField(positioner, "mExpandedViewPadding");
-        return v instanceof Integer ? (Integer) v : 0;
+    private static android.content.Context currentSystemUiContext() {
+        return sSystemUiContext;
+    }
+
+    /** 系统当前是否横屏。 */
+    private static boolean isSystemLandscape() {
+        android.content.Context ctx = sSystemUiContext;
+        if (ctx == null) return false;
+        try {
+            return ctx.getResources().getConfiguration().orientation
+                    == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     // ==================== 操作栏按钮 ====================
