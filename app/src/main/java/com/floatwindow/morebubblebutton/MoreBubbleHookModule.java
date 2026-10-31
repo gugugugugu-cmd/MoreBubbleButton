@@ -288,8 +288,8 @@ public class MoreBubbleHookModule extends XposedModule {
         //    Context 在 hookSystemUi 入口已缓存；BubbleController 由 setSelectedBubbleInternal
         //    的 hook 顺手缓存（见 cacheControllerFromBubbleData）。
         try {
-            BubbleRequestReceiver.install(mSystemUiContext);
-        } catch (Throwable t) { Log.w(TAG, "BubbleRequestReceiver install: " + t.getMessage()); }
+            BubbleBroadcastBridge.install(mSystemUiContext);
+        } catch (Throwable t) { Log.w(TAG, "bridge install: " + t.getMessage()); }
 
         Log.i(TAG, "All SystemUI hooks installed");
     }
@@ -308,12 +308,12 @@ public class MoreBubbleHookModule extends XposedModule {
     /** SystemUI 进程的 Context；hookSystemUi 入口处缓存，供外部广播入口与开气泡使用。 */
     private static Context mSystemUiContext;
 
-    /** 按包名给应用弹出气泡小窗（供 BubbleRequestReceiver 调用）。 */
-    static void requestAppBubble(Context ctx, String pkg, int userId) {
+    /** 按包名给应用弹出气泡小窗（供 BubbleBroadcastBridge 调用）。 */
+    static void requestAppBubble(Context ctx, String pkg, String activityName, int userId) {
         // onReceive 不保证在主线程；BubbleController 的操作必须在 SystemUI 主线程执行。
         if (Looper.myLooper() != Looper.getMainLooper()) {
             new android.os.Handler(Looper.getMainLooper())
-                    .post(() -> requestAppBubble(ctx, pkg, userId));
+                    .post(() -> requestAppBubble(ctx, pkg, activityName, userId));
             return;
         }
         try {
@@ -328,6 +328,11 @@ public class MoreBubbleHookModule extends XposedModule {
                 return;
             }
             launch.setPackage(pkg);
+            // 轮盘可以绑定应用内某个具体界面；给了就用它，否则走启动入口。
+            if (activityName != null && !activityName.isEmpty()) {
+                String cls = activityName.startsWith(".") ? pkg + activityName : activityName;
+                launch.setComponent(new ComponentName(pkg, cls));
+            }
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             UserHandle user = (UserHandle) UserHandle.class.getMethod("of", int.class).invoke(null, userId);
             Object controller = sCachedController != null ? sCachedController : findBubbleController(ctx);
