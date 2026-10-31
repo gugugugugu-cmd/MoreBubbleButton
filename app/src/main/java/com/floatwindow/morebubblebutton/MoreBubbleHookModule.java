@@ -356,37 +356,28 @@ public class MoreBubbleHookModule extends XposedModule {
     }
 
 
-    /** 读 ActivityInfo 里的 @hide 布尔字段（allowEmbedded / resizeableActivity）。 */
-    private static boolean readBool(Object target, String field) {
-        try {
-            java.lang.reflect.Field f = android.content.pm.ActivityInfo.class.getField(field);
-            f.setAccessible(true);
-            return f.getBoolean(target);
-        } catch (Throwable t) {
-            try {
-                java.lang.reflect.Field f = android.content.pm.ActivityInfo.class.getDeclaredField(field);
-                f.setAccessible(true);
-                return f.getBoolean(target);
-            } catch (Throwable ignored) {
-                return false;
-            }
-        }
-    }
-
     /** 包内是否声明了 allowEmbedded + resizeableActivity 的 Activity，返回全类名。 */
     private static String findEmbeddableActivity(Context ctx, String pkg) {
         try {
             android.content.pm.PackageInfo pi = ctx.getPackageManager()
                     .getPackageInfo(pkg, android.content.pm.PackageManager.GET_ACTIVITIES);
             if (pi == null || pi.activities == null) return null;
+            // ActivityInfo 里没有 allowEmbedded / resizeableActivity 这两个字段（只有 FLAG_* 常量），
+            // 所以按「内部 Activity + 名字里带 bubble」来挑：这类 Activity 是应用为嵌入式
+            // /气泡场景专门准备的（Telegram 的就是 org.telegram.ui.BubbleActivity）。
+            StringBuilder all = new StringBuilder();
+            String byName = null;
             for (android.content.pm.ActivityInfo ai : pi.activities) {
-                // allowEmbedded / resizeableActivity 是 @hide 字段，只能反射读
-                if (!readBool(ai, "allowEmbedded")) continue;
-                if (!readBool(ai, "resizeableActivity")) continue;
-                if (ai.exported) continue;      // 只挑内部使用的
-                if (!ai.enabled) continue;
-                Log.i(TAG, "embeddable candidate: " + ai.name);
-                return ai.name;
+                if (ai == null || ai.name == null) continue;
+                if (all.length() < 400) all.append(ai.name).append(ai.exported ? "(e) " : " ");
+                if (ai.exported || !ai.enabled) continue;
+                String simple = ai.name.substring(ai.name.lastIndexOf('.') + 1).toLowerCase();
+                if (byName == null && simple.contains("bubble")) byName = ai.name;
+            }
+            Log.i(TAG, "activities of " + pkg + ": " + all);
+            if (byName != null) {
+                Log.i(TAG, "embeddable candidate: " + byName);
+                return byName;
             }
         } catch (Throwable t) {
             Log.w(TAG, "embeddable lookup failed for " + pkg + ": " + t.getMessage());
