@@ -35,7 +35,7 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     /** 编译标记：日志里能直接看出跑的是哪一版 */
-    private static final String BUILD_TAG = "v1.26-telegram-preinit";
+    private static final String BUILD_TAG = "v1.27-telegram-setbubble";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -351,16 +351,31 @@ public class MoreBubbleHookModule extends XposedModule {
         // 把 Bubble 上的 mPendingIntent / mIntent 换成嵌入式 Activity，原方法自然带着新值执行。
         try {
             Class<?> listenerCls = cl.loadClass("com.android.wm.shell.bubbles.BubbleTaskViewListener");
-            java.lang.reflect.Method init = listenerCls.getMethod("onInitialized");
-            hook(init).intercept(chain -> {
+            final Context sysCtx = sSystemUiContext;
+            for (String name : new String[]{"setBubble", "onInitialized"}) {
                 try {
-                    retargetBubbleForLaunch(chain.getThisObject());
+                    java.lang.reflect.Method m = name.equals("setBubble")
+                            ? listenerCls.getMethod("setBubble",
+                                    listenerCls.getClassLoader().loadClass("com.android.wm.shell.bubbles.Bubble"))
+                            : listenerCls.getMethod("onInitialized");
+                    hook(m).intercept(chain -> {
+                        Object self = chain.getThisObject();
+                        try {
+                            // 无条件打一条：证明 hook 真的执行了（不管是否命中映射）
+                            Object b = getField(self, "mBubble");
+                            Log.i(TAG, name + " hit: bubble=" + (b != null)
+                                    + " pkg=" + (b != null ? getField(b, "mPackageName") : null));
+                            if (b != null) retargetBubble(sysCtx, b, name);
+                        } catch (Throwable t) {
+                            Log.w(TAG, name + " retarget: " + t.getMessage());
+                        }
+                        return chain.proceed();
+                    });
+                    Log.i(TAG, "Hooked BubbleTaskViewListener." + name + " " + BUILD_TAG);
                 } catch (Throwable t) {
-                    Log.w(TAG, "retarget before launch: " + t.getMessage());
+                    Log.w(TAG, "Hook " + name + ": " + t.getMessage());
                 }
-                return chain.proceed();
-            });
-            Log.i(TAG, "Hooked BubbleTaskViewListener.onInitialized " + BUILD_TAG);
+            }
         } catch (Throwable t) {
             Log.w(TAG, "Hook BubbleTaskViewListener.onInitialized: " + t.getMessage());
         }
@@ -383,25 +398,14 @@ public class MoreBubbleHookModule extends XposedModule {
 
 
 
-    /**
-     * 在气泡真正拉起界面之前，把它的启动目标换成嵌入式 Activity。
-     * 同时处理两种来源：Bubble.mPendingIntent（优先）和 Bubble.mIntent（回退）。
-     */
-    private static void retargetBubbleForLaunch(Object listener) {
-        Context ctx = sSystemUiContext;
-        Object bubble = getField(listener, "mBubble");
+    /** 把 Bubble 的启动目标换成嵌入式 Activity（mIntent + mPendingIntent 都换）。 */
+    private static void retargetBubble(Context ctx, Object bubble, String from) {
         if (ctx == null || bubble == null) return;
+        Intent currentIntent = (Intent) getField(bubble, "mIntent");
         String pkg = (String) getField(bubble, "mPackageName");
-        if (pkg == null) {
-            Intent base = (Intent) getField(bubble, "mIntent");
-            if (base != null) pkg = base.getPackage();
-        }
+        if (pkg == null && currentIntent != null) pkg = currentIntent.getPackage();
         if (pkg == null) return;
         String forced = EMBEDDABLE_OVERRIDES.get(pkg);
-        Object pending = getField(bubble, "mPendingIntent");
-        Intent currentIntent = (Intent) getField(bubble, "mIntent");
-        Log.i(TAG, "pre-launch: pkg=" + pkg + " forced=" + forced
-                + " pending=" + (pending != null) + " intent=" + (currentIntent != null));
         if (forced == null) return;
 
         Intent target = new Intent(currentIntent != null ? currentIntent : new Intent());
@@ -410,19 +414,30 @@ public class MoreBubbleHookModule extends XposedModule {
                 | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
                 | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
         try {
-            java.lang.reflect.Field intentField = bubble.getClass().getDeclaredField("mIntent");
-            intentField.setAccessible(true);
-            intentField.set(bubble, target);
-            android.app.PendingIntent pi = android.app.PendingIntent.getActivity(ctx, 0, target,
+            setField(bubble, "mIntent", target);
+            setField(bubble, "mPendingIntent", android.app.PendingIntent.getActivity(ctx, 0, target,
                     android.app.PendingIntent.FLAG_MUTABLE
-                            | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
-            java.lang.reflect.Field pendingField = bubble.getClass().getDeclaredField("mPendingIntent");
-            pendingField.setAccessible(true);
-            pendingField.set(bubble, pi);
-            Log.i(TAG, "pre-launch retargeted -> " + forced);
+                            | android.app.PendingIntent.FLAG_UPDATE_CURRENT));
+            Log.i(TAG, "retargeted(" + from + "): " + pkg + " -> " + forced);
         } catch (Throwable t) {
             Log.w(TAG, "retarget failed: " + t.getMessage());
         }
+    }
+
+    /** 反射写字段，找不到就沿着父类找。 */
+    private static void setField(Object target, String name, Object value) throws Exception {
+        Class<?> c = target.getClass();
+        while (c != null) {
+            try {
+                java.lang.reflect.Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                f.set(target, value);
+                return;
+            } catch (NoSuchFieldException e) {
+                c = c.getSuperclass();
+            }
+        }
+        throw new NoSuchFieldException(name);
     }
 
     /**
