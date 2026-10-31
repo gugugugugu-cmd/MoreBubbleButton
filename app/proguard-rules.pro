@@ -11,6 +11,10 @@
 -keep class com.floatwindow.morebubblebutton.MoreBubbleHookModule { *; }
 
 # 其余 XposedModule 子类仍可优化，但同样不能改名
--keep,allowoptimization,allowaccessmodification,allowshrinking class * extends io.github.libxposed.api.XposedModule {
+# 注意：不能带 allowshrinking —— 不在别处被引用的入口会被 R8 整个删掉，
+# 于是 java_init.list 里写的类名在 dex 中不存在，LSPosed 静默跳过该入口。
+-keep,allowoptimization,allowaccessmodification class * extends io.github.libxposed.api.XposedModule {
     public <init>();
+    public void onModuleLoaded(...);
+    public void onPackageLoaded(...);
 }
