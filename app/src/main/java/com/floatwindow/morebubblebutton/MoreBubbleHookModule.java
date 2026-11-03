@@ -34,6 +34,8 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 
 public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
+    /** 编译标记：日志里能直接看出跑的是哪一版 */
+    private static final String BUILD_TAG = "v1.40-xlog";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -42,10 +44,11 @@ public class MoreBubbleHookModule extends XposedModule {
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
+        sInstance = this;
         // 只用来确认模块真的进了进程：logcat -s MoreBubbleModule 之前看不到任何一行，
         // 说明 SystemUI 里要么没加载模块，要么热重载被拒（LSPosed 日志：refused to be hot reloaded）。
-        Log.i(TAG, "module loaded: process=" + param.getProcessName()
-                + " api=" + getApiVersion());
+        xlog("module loaded: process=" + param.getProcessName()
+                + " api=" + getApiVersion() + " build=" + BUILD_TAG);
     }
 
 
@@ -857,8 +860,8 @@ public class MoreBubbleHookModule extends XposedModule {
                     case android.view.MotionEvent.ACTION_UP:
                         v.setPressed(false);
                         boolean left = event.getX() < v.getWidth() / 2f;
-                        Log.i(TAG, "corner action: tap x=" + (int) event.getX()
-                                + " width=" + v.getWidth() + " -> " + (left ? "dismiss" : "fullscreen"));
+                        xlog("TAP x=" + (int) event.getX() + " width=" + v.getWidth()
+                                + " -> " + (left ? "dismiss" : "fullscreen"));
                         if (left) {
                             dismissBubbleAsUserGesture(expandedView);
                         } else {
@@ -1084,6 +1087,22 @@ public class MoreBubbleHookModule extends XposedModule {
         }
     }
 
+
+    /**
+     * 同时写 logcat 和 LSPosed 框架日志。
+     * logcat 缓冲区会被冲掉，LSPosed 的 verbose 日志是独立的，两边都留一份才可靠。
+     */
+    private static volatile MoreBubbleHookModule sInstance;
+
+    private static void xlog(String msg) {
+        Log.i(TAG, msg);
+        try {
+            MoreBubbleHookModule m = sInstance;
+            if (m != null) m.log(android.util.Log.INFO, TAG, msg);
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** Official Bubble -> fullscreen handoff, preserving the current task/page. */
     private static void expandBubbleFullscreen(Object expandedView) {
         try {
@@ -1103,11 +1122,15 @@ public class MoreBubbleHookModule extends XposedModule {
             // ConvertFromBubble 拿不到动画 handler（日志里表现为 delegate animation to null），
             // 转换虽然完成但没人收尾，任务随后被当孤儿清理 —— 就是「展开后 1 秒闪退」。
             // 这里轮询 TaskViewTransitions 是否有进行中的转场，最多等 500ms。
+            xlog("FULLSCREEN enter: bubble=" + (bubble != null)
+                    + " taskView=" + (taskView != null) + " controller=" + (controller != null));
+            xlog("FULLSCREEN pendingBefore=" + pendingCount(controller));
             awaitTransitionsIdle(controller, 500L);
+            xlog("FULLSCREEN pendingAfter=" + pendingCount(controller));
             move.invoke(controller, taskController);
-            Log.i(TAG, "corner action: official fullscreen handoff submitted");
+            xlog("FULLSCREEN invoked moveTaskViewToFullscreen OK");
         } catch (Throwable t) {
-            Log.i(TAG, "corner action: official fullscreen handoff failed: " + t.getMessage(), t);
+            xlog("FULLSCREEN failed: " + t);
         }
     }
 
@@ -1120,6 +1143,19 @@ public class MoreBubbleHookModule extends XposedModule {
             try { Thread.sleep(16L); } catch (InterruptedException e) { return; }
         }
         Log.i(TAG, "corner action: transitions still busy after " + maxMs + "ms");
+        try { log(android.util.Log.INFO, TAG, "FULLSCREEN transitions busy " + maxMs + "ms"); } catch (Throwable ignored) {}
+    }
+
+    private static int pendingCount(Object controller) {
+        try {
+            Object tv = getField(controller, "mTaskView");
+            Object transitions = tv != null ? getField(tv, "mTransitions") : null;
+            Object pending = transitions != null ? getField(transitions, "mPending") : null;
+            if (pending instanceof java.util.Collection) return ((java.util.Collection<?>) pending).size();
+            return pending != null ? 1 : 0;
+        } catch (Throwable t) {
+            return -1;
+        }
     }
 
     private static boolean hasPendingTransition(Object controller) {
