@@ -856,11 +856,12 @@ public class MoreBubbleHookModule extends XposedModule {
                         return true;
                     case android.view.MotionEvent.ACTION_UP:
                         v.setPressed(false);
-                        if (event.getX() < v.getWidth() / 2f) {
-                            Log.i(TAG, "corner action: left half -> dismiss");
+                        boolean left = event.getX() < v.getWidth() / 2f;
+                        Log.i(TAG, "corner action: tap x=" + (int) event.getX()
+                                + " width=" + v.getWidth() + " -> " + (left ? "dismiss" : "fullscreen"));
+                        if (left) {
                             dismissBubbleAsUserGesture(expandedView);
                         } else {
-                            Log.i(TAG, "corner action: right half -> fullscreen");
                             expandBubbleFullscreen(expandedView);
                         }
                         return true;
