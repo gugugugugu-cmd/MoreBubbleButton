@@ -35,7 +35,7 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     /** 编译标记：日志里能直接看出跑的是哪一版 */
-    private static final String BUILD_TAG = "v1.41-xlog";
+    private static final String BUILD_TAG = "v1.42";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -1117,61 +1117,13 @@ public class MoreBubbleHookModule extends XposedModule {
             Method move = findMethod(controller.getClass(),
                     "moveTaskViewToFullscreen", taskController.getClass());
             if (move == null) throw new NoSuchMethodException("moveTaskViewToFullscreen");
-
-            // 全屏转换必须等「气泡自身正在播放的转场」结束之后再提交，否则系统的
-            // ConvertFromBubble 拿不到动画 handler（日志里表现为 delegate animation to null），
-            // 转换虽然完成但没人收尾，任务随后被当孤儿清理 —— 就是「展开后 1 秒闪退」。
-            // 这里轮询 TaskViewTransitions 是否有进行中的转场，最多等 500ms。
-            xlog("FULLSCREEN enter: bubble=" + (bubble != null)
-                    + " taskView=" + (taskView != null) + " controller=" + (controller != null));
-            xlog("FULLSCREEN pendingBefore=" + pendingCount(controller));
-            awaitTransitionsIdle(controller, 500L);
-            xlog("FULLSCREEN pendingAfter=" + pendingCount(controller));
             move.invoke(controller, taskController);
-            xlog("FULLSCREEN invoked moveTaskViewToFullscreen OK");
+            Log.i(TAG, "corner action: official fullscreen handoff submitted");
         } catch (Throwable t) {
-            xlog("FULLSCREEN failed: " + t);
+            Log.i(TAG, "corner action: official fullscreen handoff failed: " + t.getMessage(), t);
         }
     }
 
-
-    /** 等系统转场空闲（最多 maxMs），避免和正在播放的气泡动画抢时序。 */
-    private static void awaitTransitionsIdle(Object controller, long maxMs) {
-        long deadline = System.currentTimeMillis() + maxMs;
-        while (System.currentTimeMillis() < deadline) {
-            if (!hasPendingTransition(controller)) return;
-            try { Thread.sleep(16L); } catch (InterruptedException e) { return; }
-        }
-        xlog("FULLSCREEN transitions busy after " + maxMs + "ms");
-    }
-
-    private static int pendingCount(Object controller) {
-        try {
-            Object tv = getField(controller, "mTaskView");
-            Object transitions = tv != null ? getField(tv, "mTransitions") : null;
-            Object pending = transitions != null ? getField(transitions, "mPending") : null;
-            if (pending instanceof java.util.Collection) return ((java.util.Collection<?>) pending).size();
-            return pending != null ? 1 : 0;
-        } catch (Throwable t) {
-            return -1;
-        }
-    }
-
-    private static boolean hasPendingTransition(Object controller) {
-        try {
-            Object tv = getField(controller, "mTaskView");
-            if (tv == null) return false;
-            Object transitions = getField(tv, "mTransitions");
-            if (transitions == null) return false;
-            // TaskViewTransitions 用 mPending(ArrayList) 记录进行中的转场（反编译核实）
-            Object pending = getField(transitions, "mPending");
-            if (pending instanceof java.util.Map) return !((java.util.Map<?, ?>) pending).isEmpty();
-            if (pending instanceof java.util.Collection) return !((java.util.Collection<?>) pending).isEmpty();
-            return false;
-        } catch (Throwable t) {
-            return false;
-        }
-    }
 
     /* Retained as a diagnostic fallback only; the corner button does not use it. */
     private static volatile long sLastCornerLaunchAt;
