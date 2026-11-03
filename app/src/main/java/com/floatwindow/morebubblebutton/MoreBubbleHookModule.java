@@ -35,7 +35,7 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
 public class MoreBubbleHookModule extends XposedModule {
     private static final String TAG = "MoreBubbleModule";
     /** 编译标记：日志里能直接看出跑的是哪一版 */
-    private static final String BUILD_TAG = "v1.40-xlog";
+    private static final String BUILD_TAG = "v1.41-xlog";
     private Object recentsViewInstance;
     private View bubbleButton;
     /** 第二行模式的容器（null = 跟随原按钮） */
@@ -1142,8 +1142,7 @@ public class MoreBubbleHookModule extends XposedModule {
             if (!hasPendingTransition(controller)) return;
             try { Thread.sleep(16L); } catch (InterruptedException e) { return; }
         }
-        Log.i(TAG, "corner action: transitions still busy after " + maxMs + "ms");
-        try { log(android.util.Log.INFO, TAG, "FULLSCREEN transitions busy " + maxMs + "ms"); } catch (Throwable ignored) {}
+        xlog("FULLSCREEN transitions busy after " + maxMs + "ms");
     }
 
     private static int pendingCount(Object controller) {
